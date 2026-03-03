@@ -9,6 +9,7 @@
 [![codecov](https://codecov.io/gh/freva-org/py-oidc-auth-client/graph/badge.svg?token=9JP9UWixaf)](https://codecov.io/gh/freva-org/py-oidc-auth-client)
 [![docs](https://readthedocs.org/projects/py-oidc-auth-client/badge/?version=latest)](https://py-oidc-auth-client.readthedocs.io/en/latest/?badge=latest)
 [![PyPI](https://img.shields.io/pypi/v/py-oidc-auth-client)](https://pypi.org/project/py-oidc-auth-client/)
+[![Python Versions](https://img.shields.io/pypi/pyversions/py-oidc-auth-client)](https://pypi.org/project/py-oidc-auth-client/)
 
 
 

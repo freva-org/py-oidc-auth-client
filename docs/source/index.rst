@@ -21,6 +21,10 @@ py-oidc-auth-client
    :target: https://pypi.org/project/py-oidc-auth-client/
    :alt: PyPI version
 
+.. image:: https://img.shields.io/pypi/pyversions/py-oidc-auth-client
+   :target: https://pypi.org/project/py-oidc-auth-client/
+   :alt: Supported Python versions
+
 The package is designed as the counterpart of the server side library ``py-oidc-auth``.
 It helps applications and scripts obtain and refresh access tokens against an auth server
 that exposes the standard routes (login, token, device).
