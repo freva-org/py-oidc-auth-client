@@ -17,6 +17,9 @@ py-oidc-auth-client
 .. image:: https://codecov.io/gh/freva-org/py-oidc-auth-client/graph/badge.svg?token=9JP9UWixaf
    :target: https://codecov.io/gh/freva-org/py-oidc-auth-client
 
+.. image:: https://img.shields.io/pypi/v/py-oidc-auth-client
+   :target: https://pypi.org/project/py-oidc-auth-client/
+   :alt: PyPI version
 
 The package is designed as the counterpart of the server side library ``py-oidc-auth``.
 It helps applications and scripts obtain and refresh access tokens against an auth server
