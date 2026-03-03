@@ -72,7 +72,7 @@ from .flows import BaseFlow, CodeFlow, DeviceFlow
 from .schema import DeviceCode, Token
 from .token_store import TokenStore
 
-__version__ = "2026.0.0"
+__version__ = "2602.0.0"
 
 
 def authenticate(

@@ -42,6 +42,8 @@ Guides and reference
    guides/quickstart
    guides/non_interactive
    guides/configuration
+   whatsnew
+   code-of-conduct
 
 .. toctree::
    :maxdepth: 2
