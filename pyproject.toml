@@ -7,12 +7,26 @@ description = "Client library for the OIDC Auth server."
 authors = [{name = "DKRZ, Clint", email = "freva@dkrz.de"}]
 readme = "README.md"
 license = {file = "LICENSE"}
-classifiers = [
-               "Development Status :: 4 - Beta",
-               "Intended Audience :: Developers",
-               "License :: OSI Approved :: BSD License",
-               "Operating System :: POSIX :: Linux",
-               "Programming Language :: Python :: 3",
+lassifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: Session",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration :: Authentication/Directory",
+    "Typing :: Typed",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
 ]
 dynamic = ["version"]
 requires-python = ">=3.8"

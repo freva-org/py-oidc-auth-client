@@ -7,7 +7,7 @@ a configuration object.
 Config
 ------
 
-:class:`py_oidc_auth_client.utils.Config` defines:
+:class:`py_oidc_auth_client.Config` defines:
 
 * the server host
 * route paths for login, token and device endpoints
@@ -17,7 +17,7 @@ Example:
 
 .. code-block:: python
 
-   from py_oidc_auth_client.utils import Config
+   from py_oidc_auth_client import Config
 
    config = Config(
        host="https://auth.example.org",
@@ -33,25 +33,9 @@ The high level helper uses a token file to store and refresh tokens across sessi
 
 .. code-block:: python
 
-   from py_oidc_auth_client import authenticate
+   from py_oidc_auth_client import authenticate, TokenStore
 
    token = authenticate(
        host="https://auth.example.org",
-       token_file="~/.cache/py-oidc-auth-client/token.json",
+       store=TokenStore(path="~/.cache/py-oidc-auth-client/token.json"),
    )
-
-Building docs
--------------
-
-If your documentation build does not install optional dependencies, add the following to
-your Sphinx ``conf.py``:
-
-.. code-block:: python
-
-   autodoc_mock_imports = [
-       "httpx",
-       "rich",
-       "rich.console",
-       "rich.spinner",
-       "rich.live",
-   ]
