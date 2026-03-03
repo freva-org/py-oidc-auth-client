@@ -115,17 +115,17 @@ If you need more control than `authenticate()`, use the flow helpers from `py_oi
 
 ```python
 import asyncio
-from py_oidc_auth_client import Config, DeviceFlowResponse
+from py_oidc_auth_client import Config, DeviceFlow
 
 async def main() -> None:
     cfg = Config(host="https://auth.example.org")
-    flow = DeviceFlowResponse(config=cfg, token=None, timeout=600)
+    flow = DeviceFlow(config=cfg, token=None, timeout=600)
 
     device = await flow.get_device_code()
     print("Open:", device.uri)
     print("Code:", device.user_code)
 
-    await flow.poll_for_token(device.device_code, int(device.interval))
+    await flow.poll(device["device_code"], int(device["interval"]))
     print(flow.token["headers"])
 
 asyncio.run(main())
@@ -135,11 +135,11 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from py_oidc_auth_client import Config, CodeFlowResponse
+from py_oidc_auth_client import Config, CodeFlow
 
 async def main() -> None:
     cfg = Config(host="https://auth.example.org")
-    flow = CodeFlowResponse(config=cfg, token=None, timeout=120)
+    flow = CodeFlow(config=cfg, token=None, timeout=120)
     await flow.login()
     print(flow.token["headers"])
 

@@ -27,14 +27,14 @@ For advanced usage, use :class:`py_oidc_auth_client.DeviceFlowResponse` directly
 .. code-block:: python
 
    import asyncio
-   from py_oidc_auth_client import Config, DeviceFlowResponse
+   from py_oidc_auth_client import Config, DeviceFlow
 
    async def main():
-       flow = DeviceFlowResponse(config=Config(host="https://auth.example.org"), token=None)
+       flow = DeviceFlow(config=Config(host="https://auth.example.org"), token=None)
        device = await flow.get_device_code()
-       print(device.uri)
-       print(device.user_code)
-       await flow.poll_for_token(device.device_code, device.interval)
-       print(flow.token.headers)
+       print(device["uri"])
+       print(device["user_code"])
+       await flow.poll(device.device_code, device.interval)
+       print(flow.token["headers"])
 
    asyncio.run(main())

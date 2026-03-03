@@ -22,8 +22,8 @@ The high level helper performs the best available strategy:
    from py_oidc_auth_client import authenticate
 
    token = authenticate(host="https://auth.example.org")
-   print(token.access_token)
-   print(token.headers)
+   print(token["access_token"])
+   print(token["headers"])
 
 Using the token with httpx
 --------------------------
@@ -36,6 +36,6 @@ Using the token with httpx
    token = authenticate(host="https://auth.example.org")
 
    with httpx.Client() as client:
-       r = client.get("https://service.example.org/protected", headers=token.headers)
+       r = client.get("https://service.example.org/protected", headers=token["headers"])
        r.raise_for_status()
        print(r.json())
