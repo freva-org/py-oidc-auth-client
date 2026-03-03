@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/source/_static/logo.png" alt="py-oidc-auth-client logo" width="560">
+  <img src="https://raw.githubusercontent.com/freva-org/py-oidc-auth-client/main/docs/source/_static/logo.png" alt="py-oidc-auth-client logo" width="560">
 </p>
 <p align="center">
 <em>Typed client library for the authentication routes exposed by py-oidc-auth.</em>
@@ -84,11 +84,11 @@ By default, the client stores tokens in a cache file so you do not have to re-au
 You can control where tokens are stored with `token_file`:
 
 ```python
-from py_oidc_auth_client import authenticate
+from py_oidc_auth_client import authenticate, TokenStore
 
 token = authenticate(
     host="https://auth.example.org",
-    token_file="~/.cache/py-oidc-auth-client/token.json",
+    store=TokenStore(path="~/.cache/py-oidc-auth-client/token.json"),
 )
 ```
 
@@ -115,8 +115,7 @@ If you need more control than `authenticate()`, use the flow helpers from `py_oi
 
 ```python
 import asyncio
-from py_oidc_auth_client.auth import DeviceFlowResponse
-from py_oidc_auth_client.utils import Config
+from py_oidc_auth_client import Config, DeviceFlowResponse
 
 async def main() -> None:
     cfg = Config(host="https://auth.example.org")
@@ -136,8 +135,7 @@ asyncio.run(main())
 
 ```python
 import asyncio
-from py_oidc_auth_client.auth import CodeFlowResponse
-from py_oidc_auth_client.utils import Config
+from py_oidc_auth_client import Config, CodeFlowResponse
 
 async def main() -> None:
     cfg = Config(host="https://auth.example.org")
@@ -147,17 +145,6 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
-
-## Documentation
-
-This repository ships a Sphinx documentation tree under `docs/`.
-
-If you build documentation without installing all runtime dependencies, you can configure Sphinx to mock
-imports via `autodoc_mock_imports` in `conf.py`.
-
-## License
-
-Choose a license that matches your project goals. For most Python libraries, MIT or Apache-2.0 are common choices.
 
 ## Contributing
 

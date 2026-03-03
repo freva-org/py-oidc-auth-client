@@ -1,6 +1,3 @@
-py-oidc-auth-client
-================
-
 .. image:: _static/logo.png
    :alt: py-oidc-auth-client logo
    :width: 560px

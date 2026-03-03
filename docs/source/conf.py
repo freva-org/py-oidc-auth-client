@@ -70,6 +70,7 @@ html_theme = "pydata_sphinx_theme"
 html_logo = os.path.join(html_static_path[0], "logo.png")
 templates_path = ["_templates"]
 html_favicon = os.path.join(html_static_path[0], "favicon.ico")
+html_css_files = ["custom.css"]
 html_theme_options = {
     "icon_links": [
         {

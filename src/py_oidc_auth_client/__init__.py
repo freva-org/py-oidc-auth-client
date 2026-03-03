@@ -71,8 +71,9 @@ from .exceptions import AuthError
 from .flows import BaseFlow, CodeFlow, DeviceFlow
 from .schema import DeviceCode, Token
 from .token_store import TokenStore
+from .utils import Config
 
-__version__ = "2602.0.0"
+__version__ = "2602.0.1"
 
 
 def authenticate(
@@ -313,6 +314,7 @@ __all__ = [
     "AuthError",
     "BaseFlow",
     "CodeFlow",
+    "Config",
     "DeviceCode",
     "DeviceFlow",
     "Token",

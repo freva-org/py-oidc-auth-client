@@ -14,7 +14,7 @@ The server library provides framework adapters that expose common OpenID Connect
 * ``POST /auth/v2/device``
 
 This client library calls those routes and returns a :class:`py_oidc_auth_client.schema.Token`
-object that can be used to authorize requests.
+dictionary that can be used to authorize requests.
 
 When to use this library
 ------------------------

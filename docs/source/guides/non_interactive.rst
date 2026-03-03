@@ -16,19 +16,18 @@ and updates this file.
 
    token = authenticate(
        host="https://auth.example.org",
-       token_file="~/.oidc-token.json",
+       app_name="my-app",
    )
 
 Device flow manual steps
 ------------------------
 
-For advanced usage, use :class:`py_oidc_auth_client.auth.DeviceFlowResponse` directly.
+For advanced usage, use :class:`py_oidc_auth_client.DeviceFlowResponse` directly.
 
 .. code-block:: python
 
    import asyncio
-   from py_oidc_auth_client.auth import DeviceFlowResponse
-   from py_oidc_auth_client.utils import Config
+   from py_oidc_auth_client import Config, DeviceFlowResponse
 
    async def main():
        flow = DeviceFlowResponse(config=Config(host="https://auth.example.org"), token=None)
