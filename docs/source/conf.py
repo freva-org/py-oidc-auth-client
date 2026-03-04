@@ -96,7 +96,7 @@ html_context = {
     "github_version": "main",
     "doc_path": "docs",
 }
-html_sidebars = {"**": ["search-field", "sidebar-nav-bs"]}
+html_sidebars = {"**": ["sidebar-nav-bs"]}
 html_meta = {
     "description": "Client lib for the OpenID Connect authentication.",
     "keywords": "oauth2, oauth2.1, oidc, authentication, authorization, web, client.",
