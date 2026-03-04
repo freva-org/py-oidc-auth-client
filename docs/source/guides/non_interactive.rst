@@ -22,7 +22,7 @@ and updates this file.
 Device flow manual steps
 ------------------------
 
-For advanced usage, use :class:`py_oidc_auth_client.DeviceFlowResponse` directly.
+For advanced usage, use :class:`py_oidc_auth_client.DeviceFlow` directly.
 
 .. code-block:: python
 

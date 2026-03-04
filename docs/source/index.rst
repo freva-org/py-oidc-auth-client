@@ -38,12 +38,51 @@ Key features
 Quick start
 -----------
 
-.. code-block:: python
+.. dropdown:: High level ``authenticate`` function.
+    :icon: code
 
-   from py_oidc_auth_client import authenticate
+    .. code-block:: python
 
-   token = authenticate(host="https://auth.example.org")
-   headers = token.headers
+        from py_oidc_auth_client import authenticate
+
+        token = authenticate(host="https://auth.example.org")
+        headers = token.headers
+
+.. dropdown:: Device flow
+    :icon: code
+
+    .. code-block:: python
+
+        import asyncio
+        from py_oidc_auth_client import Config, DeviceFlow
+
+        async def main():
+           flow = DeviceFlow(config=Config(host="https://auth.example.org"), token=None)
+           device = await flow.get_device_code()
+           print(device["uri"])
+           print(device["user_code"])
+           await flow.poll(device.device_code, device.interval)
+           print(flow.token["headers"])
+
+        asyncio.run(main())
+
+
+.. dropdown:: Code flow
+    :icon: code
+
+    .. code-block:: python
+
+        import asyncio
+        from py_oidc_auth_client import Config, CodeFlow
+
+        async def main():
+           flow = CodeFlow(config=Config(host="https://auth.example.org"), token=None)
+           token = await flow.login()
+           print(token["headers"])
+
+        asyncio.run(main())
+
+
 
 Guides and reference
 --------------------
