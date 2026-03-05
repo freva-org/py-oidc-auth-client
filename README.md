@@ -125,8 +125,8 @@ async def main() -> None:
     print("Open:", device.uri)
     print("Code:", device.user_code)
 
-    await flow.poll(device["device_code"], int(device["interval"]))
-    print(flow.token["headers"])
+    token = await flow.poll(device["device_code"], int(device["interval"]))
+    print(token["headers"])
 
 asyncio.run(main())
 ```
@@ -140,8 +140,8 @@ from py_oidc_auth_client import Config, CodeFlow
 async def main() -> None:
     cfg = Config(host="https://auth.example.org")
     flow = CodeFlow(config=cfg, token=None, timeout=120)
-    await flow.login()
-    print(flow.token["headers"])
+    token = await flow.authenticate()
+    print(token["headers"])
 
 asyncio.run(main())
 ```

@@ -30,11 +30,30 @@ For advanced usage, use :class:`py_oidc_auth_client.DeviceFlow` directly.
    from py_oidc_auth_client import Config, DeviceFlow
 
    async def main():
-       flow = DeviceFlow(config=Config(host="https://auth.example.org"), token=None)
+       flow = DeviceFlow(config=Config(host="https://auth.example.org"))
        device = await flow.get_device_code()
        print(device["uri"])
        print(device["user_code"])
-       await flow.poll(device.device_code, device.interval)
-       print(flow.token["headers"])
+       token = await flow.poll(device.device_code, device.interval)
+       print(token["headers"])
 
    asyncio.run(main())
+
+
+Manual code flow
+----------------
+
+Browser based code flow can be realised by using the
+:class:`py_oidc_auth_client.CodeFlow` class.
+
+.. code-block:: python
+
+    import asyncio
+    from py_oidc_auth_client import Config, CodeFlow
+
+    async def main():
+       flow = CodeFlow(config=Config(host="https://auth.example.org"))
+       token = await flow.authenticate()
+       print(token["headers"])
+
+    asyncio.run(main())

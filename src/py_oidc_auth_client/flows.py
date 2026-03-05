@@ -44,7 +44,7 @@ from asyncio import sleep as asleep
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
-from typing import Any, ClassVar, Dict, List, Optional, cast
+from typing import Any, ClassVar, Dict, List, Mapping, Optional, cast
 
 import httpx
 
@@ -339,7 +339,7 @@ class BaseFlow:
     async def _post_form(
         self,
         url: str,
-        data: Optional[Dict[str, str]] = None,
+        data: Optional[Mapping[str, Optional[str]]] = None,
     ) -> Dict[str, Any]:
         """POST form encoded data and return the JSON response.
 
@@ -360,9 +360,10 @@ class BaseFlow:
         AuthError
             On HTTP >= 400 or unparsable response bodies.
         """
+        data = data or {}
         resp = await self.session.post(
             url,
-            data=data,
+            data={k: v for (k, v) in data.items() if v},
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Connection": "close",
@@ -905,6 +906,7 @@ class CodeFlow(BaseFlow):
         event = Event()
         server = self._start_local_server(port, event)
         code: Optional[str] = None
+        code_verifier: Optional[str] = None
         reason = "Login failed."
         try:
             await self._wait_for_port("localhost", port)
