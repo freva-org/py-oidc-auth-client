@@ -31,6 +31,21 @@ jobs:
       - name: Linting, type checking and docs with tox
         run: tox -p 3 --parallel-no-spinner
 
+  integration_tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: false
+          submodules: recursive
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+      - name: Install dependencies
+        run: python3 -m pip install . -c .github/dependabot/constraints.txt
+      - name: Verify import
+        run: python3 -c "from py_oidc_auth_client import *"
 
 
   tests:
@@ -61,24 +76,31 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           verbose: true
 
+
   dependabot:
     name: Merge PR by dependabot
     runs-on: ubuntu-latest
     needs: [tests, lint-and-docs]
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.FREVA_BOT_APP_ID }}
+          private-key: ${{ secrets.FREVA_BOT_PRIVATE_KEY }}
       - name: Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@v1
         with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
+          github-token: ${{ steps.app-token.outputs.token }}
       - name: Approve dependabot's PR
         run: gh pr review --approve "$PR_URL"
         env:
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GITHUB_TOKEN: ${{secrets.TOKEN}}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
       - name: Auto-merge for dependabot's PR
         run: gh pr merge --merge --auto "$PR_URL"
         env:
-          PR_URL: ${{github.event.pull_request.html_url}}
-          GITHUB_TOKEN: ${{secrets.TOKEN}}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
