@@ -43,7 +43,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
       - name: Install dependencies
-        run: python3 -m pip install -c .github/dependabot/constraints.txt
+        run: python3 -m pip install . -c .github/dependabot/constraints.txt
       - name: Verify import
         run: python3 -c "from py_oidc_auth_client import *"
 
