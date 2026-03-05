@@ -47,24 +47,23 @@ from threading import Event, Thread
 from typing import Any, ClassVar, Dict, List, Optional, cast
 
 import httpx
-import rich.console
 
 from .exceptions import AuthError
 from .schema import DeviceCode, Token
 from .token_store import TokenStore
 from .utils import (
     Config,
-    _clock,
     build_url,
     choose_token_strategy,
-    is_interactive_shell,
+    clock,
+    pprint,
 )
 
 logger = logging.getLogger(__name__)
 
 REDIRECT_URI = "http://localhost:{port}/callback"
 
-_BROWSER_MESSAGE = """Will attempt to open the auth url in your browser.
+_INTERACTIVE_DEVICE_MESSAGE = """Will attempt to open the auth url in your browser.
 
 If this doesn't work, try opening the following url:
 
@@ -73,7 +72,7 @@ If this doesn't work, try opening the following url:
 You might have to enter this code manually: {b}{user_code}{b_end}
 """
 
-_NON_INTERACTIVE_MESSAGE = """
+_NON_INTERACTIVE_DEVICE_MESSAGE = """
 Visit the following url to authorise your session:
 
 {b}{uri}{b_end}
@@ -96,6 +95,8 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         query = urllib.parse.urlparse(self.path).query
         params = urllib.parse.parse_qs(query)
+        verifier = params.get("state", [""])[0].rpartition("|")[-1]
+        setattr(self.server, "code_verifier", verifier)
         if "code" in params:
             setattr(self.server, "auth_code", params["code"][0])
             self.send_response(200)
@@ -682,7 +683,7 @@ class DeviceFlow(BaseFlow):
         url = build_url(self.config.host, self.config.token_route)
         start = time.monotonic()
         interval = max(1, base_interval)
-        with _clock(self.timeout, self.interactive):
+        with clock(self.timeout, self.interactive):
             while True:
                 sleep = interval + random.uniform(-0.2, 0.4)
                 if (
@@ -723,33 +724,21 @@ class DeviceFlow(BaseFlow):
         uri = init.get("verification_uri_complete") or init["verification_uri"]
         user_code = init["user_code"]
 
-        console = rich.console.Console(
-            force_terminal=is_interactive_shell(), stderr=True
-        )
-        pprint = console.print if console.is_terminal else print
-        b, b_end = ("[b]", "[/b]") if console.is_terminal else ("", "")
-
         if auto_open and init.get("verification_uri_complete"):
             try:
                 pprint(
-                    _BROWSER_MESSAGE.format(
-                        user_code=user_code,
-                        uri=uri,
-                        b=b,
-                        b_end=b_end,
-                    )
+                    _INTERACTIVE_DEVICE_MESSAGE,
+                    user_code=user_code,
+                    uri=uri,
                 )
                 webbrowser.open(init["verification_uri_complete"])
             except Exception as error:
                 logger.warning("Could not auto open browser: %s", error)
         else:
             pprint(
-                _NON_INTERACTIVE_MESSAGE.format(
-                    user_code=user_code,
-                    uri=uri,
-                    b=b,
-                    b_end=b_end,
-                )
+                _NON_INTERACTIVE_DEVICE_MESSAGE,
+                user_code=user_code,
+                uri=uri,
             )
 
         raw = await self._poll_for_token(
@@ -904,16 +893,13 @@ class CodeFlow(BaseFlow):
             "prompt": "consent",
         }
         login_url = f"{login_url_base}?{urllib.parse.urlencode(params)}"
-
-        logger.info("Opening browser for login:\n%s", login_url)
-        logger.info(
-            "If you are on a remote host, forward port %d:\n"
-            "    ssh -L %d:localhost:%d %s@%s",
-            port,
-            port,
-            port,
-            getuser(),
-            socket.gethostname(),
+        pprint("Opening browser for login: {b}{url}{b_end}\n", url=login_url)
+        pprint(
+            "If you are on a remote host, forward port {b}{port:d}{b_end}:\n"
+            "    {b}ssh -L {port:d}:localhost:{port:d} {user}@{host}{b_end}",
+            port=port,
+            user=getuser(),
+            host=socket.gethostname(),
         )
 
         event = Event()
@@ -930,6 +916,7 @@ class CodeFlow(BaseFlow):
                     "Possibly headless environment."
                 )
             code = getattr(server, "auth_code", None)
+            code_verifier = getattr(server, "code_verifier", None)
         except Exception as error:
             logger.warning(
                 "Could not open browser automatically. %s "
@@ -951,6 +938,7 @@ class CodeFlow(BaseFlow):
             "code": code,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
+            "code_verifier": code_verifier or None,
         }
         raw = await self._post_form(token_url, data)
         return self._build_token(raw)
