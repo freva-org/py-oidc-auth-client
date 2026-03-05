@@ -22,7 +22,7 @@ jobs:
         with:
           submodules: recursive
       - name: Setup Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Install packages
@@ -41,7 +41,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
       - name: Install dependencies
         run: python3 -m pip install . -c .github/dependabot/constraints.txt
       - name: Verify import
@@ -62,7 +62,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{matrix.python-version}}
       - name: Install dependencies
