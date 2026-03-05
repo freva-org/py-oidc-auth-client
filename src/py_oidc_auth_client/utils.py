@@ -10,11 +10,13 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import partial
 from typing import (
     Iterator,
     List,
     Literal,
     Optional,
+    Union,
     cast,
 )
 
@@ -27,6 +29,18 @@ from .schema import Token
 TOKEN_EXPIRY_BUFFER = 60  # seconds
 TOKEN_ENV_VAR = "OIDC_TOKEN_FILE"
 DEFAULT_APP_NAME = "py-oidc-auth"
+
+
+def pprint(text: str, **args: Union[str, int]) -> None:
+    """Pritty print a text to stderr."""
+    console = rich.console.Console(
+        force_terminal=is_interactive_shell(), stderr=True
+    )
+    _pprint = (
+        console.print if console.is_terminal else partial(print, file=sys.stderr)
+    )
+    b, b_end = ("[b]", "[/b]") if console.is_terminal else ("", "")
+    _pprint(text.format(b=b, b_end=b_end, **args))
 
 
 @dataclass
@@ -96,7 +110,7 @@ def build_url(base: str, *parts: str) -> str:
 
 
 @contextmanager
-def _clock(
+def clock(
     timeout: Optional[int] = None, interactive: Optional[bool] = None
 ) -> Iterator[None]:
     """Show a rich spinner while waiting for user approval.
