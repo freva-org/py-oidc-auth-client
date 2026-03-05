@@ -12,8 +12,9 @@ import socket
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from urllib.parse import urlencode
 
 import httpx
@@ -23,10 +24,9 @@ import uvicorn
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
-from py_oidc_auth_client.flows import BaseFlow, CodeFlow, DeviceFlow
+from py_oidc_auth_client.flows import BaseFlow
 from py_oidc_auth_client.schema import Token
 from py_oidc_auth_client.token_store import TokenStore
-
 
 # ---------------------------------------------------------------------------
 # Token factories
@@ -107,7 +107,9 @@ class MockTransport(httpx.AsyncBaseTransport):
         self.responses.append((status, body))
         return self
 
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+    async def handle_async_request(
+        self, request: httpx.Request
+    ) -> httpx.Response:
         self.requests.append(request)
         if len(self.responses) > 1:
             status, body = self.responses.pop(0)
@@ -144,16 +146,17 @@ def create_test_app() -> FastAPI:
 
     Controllable via POST to ``/_test/configure``.
     """
-    app = FastAPI()
 
-    @app.on_event("startup")
-    def _init_state() -> None:
+    @asynccontextmanager
+    async def _init_state(app: FastAPI) -> None:
         app.state.device_codes: Dict[str, Dict[str, Any]] = {}
         app.state.valid_refresh_tokens: set = {"test_refresh_token"}
         app.state.valid_auth_codes: set = set()
         app.state.fail_device_start: bool = False
         app.state.pending_polls: int = 1
+        yield
 
+    app = FastAPI(lifespan=_init_state)
     # -- POST /auth/v2/device -------------------------------------------
 
     @app.post("/auth/v2/device")
@@ -165,24 +168,25 @@ def create_test_app() -> FastAPI:
             )
         device_code = f"DEV-{uuid.uuid4().hex[:8]}"
         user_code = (
-            f"{uuid.uuid4().hex[:4].upper()}-"
-            f"{uuid.uuid4().hex[:4].upper()}"
+            f"{uuid.uuid4().hex[:4].upper()}-" f"{uuid.uuid4().hex[:4].upper()}"
         )
         app.state.device_codes[device_code] = {
             "user_code": user_code,
             "polls_remaining": app.state.pending_polls,
         }
         base = str(request.base_url).rstrip("/")
-        return JSONResponse({
-            "device_code": device_code,
-            "user_code": user_code,
-            "verification_uri": f"{base}/verify",
-            "verification_uri_complete": (
-                f"{base}/verify?user_code={user_code}"
-            ),
-            "expires_in": 600,
-            "interval": 0,
-        })
+        return JSONResponse(
+            {
+                "device_code": device_code,
+                "user_code": user_code,
+                "verification_uri": f"{base}/verify",
+                "verification_uri_complete": (
+                    f"{base}/verify?user_code={user_code}"
+                ),
+                "expires_in": 600,
+                "interval": 0,
+            }
+        )
 
     # -- POST /auth/v2/token --------------------------------------------
 
@@ -259,9 +263,7 @@ def create_test_app() -> FastAPI:
 
     @app.post("/_test/non_json_error")
     async def non_json_error() -> PlainTextResponse:
-        return PlainTextResponse(
-            "Internal Server Error", status_code=500
-        )
+        return PlainTextResponse("Internal Server Error", status_code=500)
 
     @app.post("/_test/non_json_ok")
     async def non_json_ok() -> PlainTextResponse:
@@ -312,9 +314,7 @@ def test_server() -> str:
     """Start a fake OIDC server and return its base URL."""
     port = _find_free_port()
     app = create_test_app()
-    config = uvicorn.Config(
-        app, host="127.0.0.1", port=port, log_level="warning"
-    )
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
