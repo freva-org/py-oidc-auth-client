@@ -7,9 +7,9 @@ import pytest
 
 from py_oidc_auth_client.utils import (
     Config,
-    _clock,
     build_url,
     choose_token_strategy,
+    clock,
     is_interactive_auth_possible,
     is_job_env,
     is_token_valid,
@@ -79,13 +79,21 @@ class TestIsTokenValid:
         assert is_token_valid(make_token(expires_in=300), "access_token") is True
 
     def test_expired_access_token(self):
-        assert is_token_valid(make_token(expires_in=-100), "access_token") is False
+        assert (
+            is_token_valid(make_token(expires_in=-100), "access_token") is False
+        )
 
     def test_valid_refresh_token(self):
-        assert is_token_valid(make_token(refresh_expires_in=3600), "refresh_token") is True
+        assert (
+            is_token_valid(make_token(refresh_expires_in=3600), "refresh_token")
+            is True
+        )
 
     def test_expired_refresh_token(self):
-        assert is_token_valid(make_token(refresh_expires_in=-100), "refresh_token") is False
+        assert (
+            is_token_valid(make_token(refresh_expires_in=-100), "refresh_token")
+            is False
+        )
 
     def test_none_token(self):
         assert is_token_valid(None, "access_token") is False
@@ -128,7 +136,9 @@ class TestChooseTokenStrategy:
             "py_oidc_auth_client.utils.is_interactive_auth_possible",
             return_value=True,
         ):
-            assert choose_token_strategy(make_expired_token()) == "interactive_auth"
+            assert (
+                choose_token_strategy(make_expired_token()) == "interactive_auth"
+            )
 
 
 class TestEnvironmentDetection:
@@ -144,12 +154,25 @@ class TestEnvironmentDetection:
 
     def test_is_job_env_clean(self):
         job_vars = {
-            "SLURM_JOB_ID", "SLURM_NODELIST", "PBS_JOBID",
-            "PBS_ENVIRONMENT", "PBS_NODEFILE", "JOB_ID", "SGE_TASK_ID",
-            "PE_HOSTFILE", "LSB_JOBID", "LSB_HOSTS", "OAR_JOB_ID",
-            "OAR_NODEFILE", "OMPI_COMM_WORLD_SIZE", "PMI_RANK",
-            "MPI_LOCALRANKID", "KUBERNETES_SERVICE_HOST",
-            "KUBERNETES_PORT", "FREVA_BATCH_JOB", "JUPYTERHUB_USER",
+            "SLURM_JOB_ID",
+            "SLURM_NODELIST",
+            "PBS_JOBID",
+            "PBS_ENVIRONMENT",
+            "PBS_NODEFILE",
+            "JOB_ID",
+            "SGE_TASK_ID",
+            "PE_HOSTFILE",
+            "LSB_JOBID",
+            "LSB_HOSTS",
+            "OAR_JOB_ID",
+            "OAR_NODEFILE",
+            "OMPI_COMM_WORLD_SIZE",
+            "PMI_RANK",
+            "MPI_LOCALRANKID",
+            "KUBERNETES_SERVICE_HOST",
+            "KUBERNETES_PORT",
+            "FREVA_BATCH_JOB",
+            "JUPYTERHUB_USER",
         }
         clean_env = {k: v for k, v in os.environ.items() if k not in job_vars}
         with patch.dict(os.environ, clean_env, clear=True):
@@ -161,12 +184,12 @@ class TestEnvironmentDetection:
 
 
 class TestClock:
-    """The _clock context manager spinner branch."""
+    """The clock context manager spinner branch."""
 
     def test_spinner_runs_when_interactive(self):
         """Cover the spinner branch by forcing interactive=True."""
         entered = False
-        with _clock(timeout=5, interactive=True):
+        with clock(timeout=5, interactive=True):
             entered = True
         assert entered
 
@@ -174,11 +197,11 @@ class TestClock:
         """The non-interactive branch is a plain yield."""
         entered = False
         with patch.dict(os.environ, {"INTERACTIVE_SESSION": "0"}):
-            with _clock(timeout=5, interactive=False):
+            with clock(timeout=5, interactive=False):
                 entered = True
         assert entered
 
     def test_spinner_without_timeout(self):
         """Cover the branch where timeout is None."""
-        with _clock(timeout=None, interactive=True):
+        with clock(timeout=None, interactive=True):
             pass
