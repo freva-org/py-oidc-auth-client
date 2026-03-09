@@ -106,15 +106,17 @@ html_meta = {
     "og:description": "Client lib for the OpenID Connect authentication.",
     "og:type": "client",
     "og:url": "https://py-oidc-auth-client.readthedocs.io",
-    "og:image": "https://freva-org.github.io/freva-admin/_images/freva_flowchart-new.png",
+    "og:image": "https://py-oidc-auth-client.readthedocs.io/en/latest/_static/logo.png",
     "twitter:card": "summary_large_image",
     "twitter:title": "OpenID Connect Authentication made easy",
     "twitter:description": "Client lib for the OpenID Connect authentication.",
-    "twitter:image": "https://freva-org.github.io/freva-admin/_images/freva_flowchart-new.png",
+    "twitter:image": "https://py-oidc-auth-client.readthedocs.io/en/latest/_static/logo.png",
 }
 
 ogp_site_url = "https://py-oidc-auth-client.readthedocs.io"
-ogp_image = "https://freva-org.github.io/freva-admin/_images/freva_flowchart-new.png"
+ogp_image = (
+    "https://freva-org.github.io/freva-admin/_images/freva_flowchart-new.png"
+)
 ogp_type = "website"
 ogp_custom_meta_tags = [
     '<meta name="twitter:card" content="summary_large_image">',
