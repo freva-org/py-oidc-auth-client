@@ -71,6 +71,7 @@ html_logo = os.path.join(html_static_path[0], "logo.png")
 templates_path = ["_templates"]
 html_favicon = os.path.join(html_static_path[0], "favicon.ico")
 html_css_files = ["custom.css"]
+html_extra_path = ["_extra"]
 html_theme_options = {
     "icon_links": [
         {
@@ -92,7 +93,7 @@ html_theme_options = {
 
 html_context = {
     "github_user": "freva-org",
-    "github_repo": "py-oidc-auth-clietn",
+    "github_repo": "py-oidc-auth-client",
     "github_version": "main",
     "doc_path": "docs",
 }
@@ -113,7 +114,7 @@ html_meta = {
 }
 
 ogp_site_url = "https://py-oidc-auth-client.readthedocs.io"
-opg_image = "https://freva-org.github.io/freva-admin/_image"
+ogp_image = "https://freva-org.github.io/freva-admin/_images/freva_flowchart-new.png"
 ogp_type = "website"
 ogp_custom_meta_tags = [
     '<meta name="twitter:card" content="summary_large_image">',
