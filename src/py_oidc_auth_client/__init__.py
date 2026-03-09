@@ -73,7 +73,7 @@ from .schema import DeviceCode, Token
 from .token_store import TokenStore
 from .utils import Config
 
-__version__ = "2603.0.0"
+__version__ = "2603.0.1"
 
 
 def authenticate(
