@@ -1,0 +1,33 @@
+# py-oidc-auth-client
+
+> Typed Python client for OpenID Connect and OAuth 2.0 authentication against services that expose py-oidc-auth-compatible routes.
+
+## Primary docs
+- /en/latest/index.html : landing page and quickstart
+- /en/latest/guides/overview.html : what the library does and when to use it
+- /en/latest/guides/quickstart.html : install and first authentication
+- /en/latest/guides/token_store.html : token persistence, refresh, host-aware storage, and layout guidance
+- /en/latest/guides/choosing_a_strategy.html : when to use authenticate, TokenStore, CodeFlow, or DeviceFlow
+- /en/latest/guides/non_interactive.html : headless and remote usage
+- /en/latest/guides/configuration.html : configuration and token storage
+- /en/latest/guides/recipes.html : task-oriented integration examples
+- /en/latest/api/stable_public_api.html : supported public API surface
+- /en/latest/api/public.html : generated API reference
+
+## Key concepts
+- authenticate() chooses the best available strategy
+- TokenStore manages token persistence, refresh reuse, and host-separated storage inside one store
+- CodeFlow handles browser-based interactive login
+- DeviceFlow handles headless user approval
+- Token carries access token data and ready-to-use auth headers
+- AuthError reports authentication failures
+
+## Common tasks
+- Authenticate interactively
+- Authenticate on remote systems
+- Reuse cached tokens
+- Refresh expired access tokens
+- Choose a dedicated token cache location
+- Keep tokens separate per application or environment
+- Reuse one TokenStore across multiple hosts
+- Attach bearer headers to httpx or other HTTP clients
