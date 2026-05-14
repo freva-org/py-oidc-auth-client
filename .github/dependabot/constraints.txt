@@ -1,5 +1,5 @@
 httpx==0.28.1
 typing_extensions==4.15.0
 rich==15.0.0
-rich-argparse==1.7.2
+rich-argparse==1.8.0
 platformdirs==4.9.6
