@@ -1,9 +1,10 @@
 """Tests for py_oidc_auth_client.utils."""
 
+from __future__ import annotations
+
 import os
 from unittest.mock import patch
 
-import pytest
 
 from py_oidc_auth_client.utils import (
     Config,
@@ -80,14 +81,11 @@ class TestIsTokenValid:
         assert is_token_valid(make_token(expires_in=300), "access_token") is True
 
     def test_expired_access_token(self):
-        assert (
-            is_token_valid(make_token(expires_in=-100), "access_token") is False
-        )
+        assert is_token_valid(make_token(expires_in=-100), "access_token") is False
 
     def test_valid_refresh_token(self):
         assert (
-            is_token_valid(make_token(refresh_expires_in=3600), "refresh_token")
-            is True
+            is_token_valid(make_token(refresh_expires_in=3600), "refresh_token") is True
         )
 
     def test_expired_refresh_token(self):
@@ -137,9 +135,7 @@ class TestChooseTokenStrategy:
             "py_oidc_auth_client.utils.is_interactive_auth_possible",
             return_value=True,
         ):
-            assert (
-                choose_token_strategy(make_expired_token()) == "interactive_auth"
-            )
+            assert choose_token_strategy(make_expired_token()) == "interactive_auth"
 
 
 class TestEnvironmentDetection:

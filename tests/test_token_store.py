@@ -1,12 +1,11 @@
 """Tests for py_oidc_auth_client.token_store."""
 
-import json
-import os
+from __future__ import annotations
+
 import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from py_oidc_auth_client.token_store import TokenStore, _is_expired, _normalise_host
 
@@ -17,7 +16,9 @@ class TestNormaliseHost:
     """Host URL normalisation for cache keys."""
 
     def test_lowercase(self):
-        assert _normalise_host("https://MyApp.Example.COM") == "https://myapp.example.com"
+        assert (
+            _normalise_host("https://MyApp.Example.COM") == "https://myapp.example.com"
+        )
 
     def test_strips_trailing_slash(self):
         assert _normalise_host("https://example.com/") == "https://example.com"
@@ -45,11 +46,21 @@ class TestIsExpired:
     """Entry expiry check logic."""
 
     def test_valid_token_not_expired(self):
-        entry = {"token": {"refresh_expires": time.time() + 3600, "expires": time.time() + 300}}
+        entry = {
+            "token": {
+                "refresh_expires": time.time() + 3600,
+                "expires": time.time() + 300,
+            }
+        }
         assert _is_expired(entry, time.time()) is False
 
     def test_expired_refresh(self):
-        entry = {"token": {"refresh_expires": time.time() - 100, "expires": time.time() - 200}}
+        entry = {
+            "token": {
+                "refresh_expires": time.time() - 100,
+                "expires": time.time() - 200,
+            }
+        }
         assert _is_expired(entry, time.time()) is True
 
     def test_missing_expiry_fields_treated_as_expired(self):
@@ -181,7 +192,6 @@ class TestTokenStorePersistence:
         mode = path.stat().st_mode & 0o777
         assert mode == 0o600
 
-
     def test_load_non_mapping_json_returns_empty(self, tmp_path: Path):
         path = tmp_path / "store.json"
         path.write_text("[]", encoding="utf-8")
@@ -205,9 +215,7 @@ class TestTokenStorePersistence:
 
         with (
             patch.object(Path, "write_text", side_effect=OSError("read only")),
-            caplog.at_level(
-                logging.WARNING, logger="py_oidc_auth_client.token_store"
-            ),
+            caplog.at_level(logging.WARNING, logger="py_oidc_auth_client.token_store"),
         ):
             store.put("https://b.example.com", make_token())
 

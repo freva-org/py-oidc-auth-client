@@ -1,5 +1,7 @@
 """Tests for provider-specific authentication backends."""
 
+from __future__ import annotations
+
 import urllib.parse
 
 import httpx
@@ -43,8 +45,10 @@ class TestProviderBackend:
         )
         assert result == {"result": "ok"}
         assert _form(transport.requests[0]) == {"grant_type": ["device_code"]}
-        assert transport.requests[0].headers["content-type"].startswith(
-            "application/x-www-form-urlencoded"
+        assert (
+            transport.requests[0]
+            .headers["content-type"]
+            .startswith("application/x-www-form-urlencoded")
         )
 
     @pytest.mark.asyncio

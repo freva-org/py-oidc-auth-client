@@ -1,9 +1,10 @@
 """Tests for the top level authenticate() and authenticate_async()."""
 
+from __future__ import annotations
+
 from pathlib import Path
 from unittest.mock import patch
 
-import httpx
 import jwt
 import pytest
 import requests
@@ -13,7 +14,7 @@ from py_oidc_auth_client.exceptions import AuthError
 from py_oidc_auth_client.flows import DeviceFlow
 from py_oidc_auth_client.token_store import TokenStore
 
-from .conftest import make_raw_token_response, make_token
+from .conftest import make_token
 
 
 class TestAuthenticateCached:
@@ -50,9 +51,7 @@ class TestAuthenticateDeviceFlow:
             ),
             patch("webbrowser.open"),
         ):
-            result = authenticate(
-                test_server, store=tmp_store, force=True
-            )
+            result = authenticate(test_server, store=tmp_store, force=True)
         assert "access_token" in result
         decoded = jwt.decode(
             result["access_token"], options={"verify_signature": False}
@@ -72,6 +71,7 @@ class TestAuthenticateFallback:
         """Device endpoint returns 503 -> code flow is tried."""
         configure_server(fail_device_start=True)
         try:
+
             def fake_browser_open(url: str) -> None:
                 requests.get(url, timeout=5)
 
@@ -90,13 +90,9 @@ class TestAuthenticateFallback:
         async def device_auth_fails(**kwargs):
             raise AuthError("timeout", status_code=408)
 
-        with patch.object(
-            DeviceFlow, "authenticate", side_effect=device_auth_fails
-        ):
+        with patch.object(DeviceFlow, "authenticate", side_effect=device_auth_fails):
             with pytest.raises(AuthError, match="timeout"):
-                await authenticate_async(
-                    "https://a.example.com", store=tmp_store
-                )
+                await authenticate_async("https://a.example.com", store=tmp_store)
 
 
 class TestAuthenticateForce:
@@ -115,9 +111,7 @@ class TestAuthenticateForce:
             ),
             patch("webbrowser.open"),
         ):
-            result = authenticate(
-                test_server, store=tmp_store, force=True
-            )
+            result = authenticate(test_server, store=tmp_store, force=True)
         # Server generates a random refresh_token each time, so it
         # will differ from the pre-seeded one, proving the cache was bypassed.
         assert result["refresh_token"] != old_token["refresh_token"]

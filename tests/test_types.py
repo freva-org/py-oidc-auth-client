@@ -1,5 +1,7 @@
 """Tests for public typing helpers."""
 
+from __future__ import annotations
+
 from typing import get_args
 
 from py_oidc_auth_client.types import AuthBackend, OIDCDiscoveryDocument

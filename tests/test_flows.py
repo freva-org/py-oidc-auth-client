@@ -1,5 +1,7 @@
 """Tests for py_oidc_auth_client.flows."""
 
+from __future__ import annotations
+
 import socket
 import threading
 import time
