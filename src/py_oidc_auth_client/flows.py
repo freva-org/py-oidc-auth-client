@@ -131,22 +131,6 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
         self.send_response(400)
         self.end_headers()
         self.wfile.write(b"Authorization failed.")
-        query = urllib.parse.urlparse(self.path).query
-        params = urllib.parse.parse_qs(query)
-        setattr(self.server, "auth_state", params.get("state", [None])[0])
-        if "code" in params:
-            setattr(self.server, "auth_code", params["code"][0])
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"Login successful! You can close this tab.")
-            return
-        else:
-            self.send_response(400)
-            self.end_headers()
-            self.wfile.write(b"Authorization code not found.")
-        self.send_response(400)
-        self.end_headers()
-        self.wfile.write(b"Authorization failed.")
 
 
 # -----------------------------------------------------------------------
