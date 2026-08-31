@@ -13,7 +13,7 @@ The module provides three classes arranged in an inheritance hierarchy:
       +-- DeviceFlow  (OAuth 2.0 Device Authorization Grant)
       +-- CodeFlow    (OAuth 2.0 Authorization Code Grant with PKCE)
 
-All flow classes share a process wide token cache via :class:`BaseFlow`
+All flow classes share a process wide token store via :class:`BaseFlow`
 so that repeated calls reuse existing tokens when possible.
 
 Quick start
@@ -44,16 +44,14 @@ from asyncio import sleep as asleep
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
-from typing import Any, ClassVar, Dict, List, Mapping, Optional, cast
+from typing import Any, ClassVar, Dict, List, Optional
 
-import httpx
-
+from .backends import PyOIDCAuth
 from .exceptions import AuthError
 from .schema import DeviceCode, Token
 from .token_store import TokenStore
 from .utils import (
     Config,
-    build_url,
     choose_token_strategy,
     clock,
     pprint,
@@ -93,19 +91,62 @@ class _OAuthCallbackHandler(BaseHTTPRequestHandler):
         logger.debug(format, *args)
 
     def do_GET(self) -> None:  # noqa: N802
+        """Handle the OAuth authorization callback."""
         query = urllib.parse.urlparse(self.path).query
         params = urllib.parse.parse_qs(query)
-        verifier = params.get("state", [""])[0].rpartition("|")[-1]
-        setattr(self.server, "code_verifier", verifier)
+
+        setattr(
+            self.server,
+            "auth_state",
+            params.get("state", [None])[0],
+        )
+
+        if "code" in params:
+            setattr(
+                self.server,
+                "auth_code",
+                params["code"][0],
+            )
+
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Login successful! You can close this tab.")
+            return
+
+        if "error" in params:
+            setattr(
+                self.server,
+                "auth_error",
+                params["error"][0],
+            )
+            setattr(
+                self.server,
+                "auth_error_description",
+                params.get(
+                    "error_description",
+                    [None],
+                )[0],
+            )
+
+        self.send_response(400)
+        self.end_headers()
+        self.wfile.write(b"Authorization failed.")
+        query = urllib.parse.urlparse(self.path).query
+        params = urllib.parse.parse_qs(query)
+        setattr(self.server, "auth_state", params.get("state", [None])[0])
         if "code" in params:
             setattr(self.server, "auth_code", params["code"][0])
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"Login successful! You can close this tab.")
+            return
         else:
             self.send_response(400)
             self.end_headers()
             self.wfile.write(b"Authorization code not found.")
+        self.send_response(400)
+        self.end_headers()
+        self.wfile.write(b"Authorization failed.")
 
 
 # -----------------------------------------------------------------------
@@ -119,11 +160,6 @@ class BaseFlow:
     This class is not meant to be instantiated directly.  Use
     :class:`DeviceFlow` or :class:`CodeFlow` instead, or the
     convenience function :func:`~py_oidc_auth_client.authenticate`.
-
-    Instances are singletons **per host**: calling
-    ``DeviceFlow("https://a.example.com")`` twice returns the same
-    object, but ``DeviceFlow("https://b.example.com")`` creates a
-    separate instance.
 
     Tokens are persisted in a per host JSON store
     (:class:`~token_store.TokenStore`).  Expired entries are evicted
@@ -150,27 +186,9 @@ class BaseFlow:
     timeout : int or None
         HTTP and polling timeout in seconds.
 
-    Notes
-    -----
-    The per host singleton pattern ensures that only one instance per
-    concrete subclass **and** host exists.  Token state is shared
-    between ``DeviceFlow`` and ``CodeFlow`` for the same host via
-    the :class:`~token_store.TokenStore`.
-
     Examples
     --------
-    Per host singletons:
-
-    .. code-block:: python
-
-        a = DeviceFlow("https://host-a.example.com")
-        b = DeviceFlow("https://host-a.example.com")
-        c = DeviceFlow("https://host-b.example.com")
-
-        assert a is b       # same host -> same instance
-        assert a is not c   # different host -> different instance
-
-    Shared token cache across flows:
+    Shared token store across flows:
 
     .. code-block:: python
 
@@ -181,20 +199,7 @@ class BaseFlow:
         assert code.token is not None  # same store, same host
     """
 
-    _instances: ClassVar[Dict[str, "BaseFlow"]] = {}
     _default_store: ClassVar[Optional[TokenStore]] = None
-
-    def __new__(
-        cls, host: str = "", config: Optional[Config] = None, **kwargs: Any
-    ) -> "BaseFlow":
-        from .token_store import _normalise_host
-
-        effective_host = (config.host if config else host) or ""
-        key = f"{cls.__name__}::{_normalise_host(effective_host)}"
-        if key not in cls._instances:
-            instance = super().__new__(cls)
-            cls._instances[key] = instance
-        return cls._instances[key]
 
     def __init__(
         self,
@@ -206,22 +211,17 @@ class BaseFlow:
         token_route: str = "/auth/v2/token",
         device_route: str = "/auth/v2/device",
         redirect_ports: Optional[List[int]] = None,
-        timeout: Optional[int] = 30,
+        timeout: Optional[int] = None,
     ) -> None:
-        if getattr(self, "_initialized", False):
-            return
-        self.config = config or Config(
+        config = config or Config(
             host=host,
             login_route=login_route,
             token_route=token_route,
             device_route=device_route,
-            redirect_ports=redirect_ports
-            or [53100, 53101, 53102, 53103, 53104, 53105],
+            redirect_ports=redirect_ports or [53100, 53101, 53102, 53103, 53104, 53105],
         )
-        self.timeout = timeout
+        self.provider = PyOIDCAuth(config, timeout=timeout)
         self.store = store or self._get_default_store()
-        self._session: Optional[httpx.AsyncClient] = None
-        self._initialized = True
 
     @classmethod
     def _get_default_store(cls) -> TokenStore:
@@ -229,31 +229,6 @@ class BaseFlow:
         if cls._default_store is None:
             cls._default_store = TokenStore()
         return cls._default_store
-
-    @classmethod
-    def reset_instances(cls) -> None:
-        """Clear all cached singleton instances.
-
-        Primarily useful in tests to ensure a clean state.
-
-        Examples
-        --------
-        .. code-block:: python
-
-            DeviceFlow.reset_instances()
-        """
-        cls._instances.clear()
-
-    @property
-    def session(self) -> httpx.AsyncClient:
-        """Lazy ``httpx.AsyncClient`` shared across all requests."""
-        if self._session is None or self._session.is_closed:
-            self._session = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout or 600),
-                verify=True,
-                follow_redirects=True,
-            )
-        return self._session
 
     # -- Token cache (per host, via store) ------------------------------
 
@@ -269,7 +244,7 @@ class BaseFlow:
         Token or None
             The cached token, or ``None`` if no valid entry exists.
         """
-        return self.store.get(self.config.host)
+        return self.store.get(self.provider.config.host)
 
     # -- Token persistence ----------------------------------------------
 
@@ -286,7 +261,7 @@ class BaseFlow:
         Token
             The same token, for chaining convenience.
         """
-        self.store.put(self.config.host, token)
+        self.store.put(self.provider.config.host, token)
         return token
 
     def _build_token(
@@ -297,8 +272,6 @@ class BaseFlow:
 
         Handles the various expiry field names that different OIDC
         providers use (``expires``, ``expires_in``, ``exp``, etc.).
-
-        Parameters
         ----------
         response : dict
             Raw JSON payload from the token endpoint.
@@ -334,60 +307,6 @@ class BaseFlow:
         )
         return self._save_token(token)
 
-    # -- Shared HTTP helper ---------------------------------------------
-
-    async def _post_form(
-        self,
-        url: str,
-        data: Optional[Mapping[str, Optional[str]]] = None,
-    ) -> Dict[str, Any]:
-        """POST form encoded data and return the JSON response.
-
-        Parameters
-        ----------
-        url : str
-            Absolute URL to POST to.
-        data : dict or None
-            Form fields.
-
-        Returns
-        -------
-        dict
-            Parsed JSON response body.
-
-        Raises
-        ------
-        AuthError
-            On HTTP >= 400 or unparsable response bodies.
-        """
-        data = data or {}
-        resp = await self.session.post(
-            url,
-            data={k: v for (k, v) in data.items() if v},
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Connection": "close",
-            },
-            timeout=30,
-        )
-        if resp.status_code >= 400:
-            try:
-                payload = resp.json()
-            except Exception:
-                payload = {
-                    "error": "http_error",
-                    "error_description": resp.text[:300],
-                }
-            raise AuthError(
-                f"{url} -> {resp.status_code}",
-                detail=payload,
-                status_code=resp.status_code,
-            )
-        try:
-            return cast(Dict[str, Any], resp.json())
-        except Exception as error:
-            raise AuthError(f"Invalid JSON from {url}: {error}")
-
     # -- Token refresh --------------------------------------------------
 
     async def refresh(self, refresh_token: str) -> Token:
@@ -415,11 +334,7 @@ class BaseFlow:
             flow = DeviceFlow("https://myapp.example.com")
             new_token = await flow.refresh(old_token["refresh_token"])
         """
-        url = build_url(self.config.host, self.config.token_route)
-        response = await self._post_form(
-            url, data={"refresh-token": refresh_token}
-        )
-        return self._build_token(response)
+        return self._build_token(await self.provider.refresh_token(refresh_token))
 
     # -- Strategy -------------------------------------------------------
 
@@ -521,7 +436,7 @@ class DeviceFlow(BaseFlow):
         config: Optional[Config] = None,
         *,
         store: Optional[TokenStore] = None,
-        timeout: Optional[int] = 600,
+        timeout: Optional[int] = 30,
         interactive: Optional[bool] = None,
         **kwargs: Any,
     ) -> None:
@@ -571,7 +486,8 @@ class DeviceFlow(BaseFlow):
             return self.token
         if strategy == "refresh_token" and self.token:
             try:
-                return await self.refresh(self.token["refresh_token"])
+                refresh_token: str = self.token.get("refresh_token", "")
+                return await self.refresh(refresh_token)
             except AuthError:
                 logger.info("Refresh failed, falling back to device flow")
 
@@ -603,7 +519,7 @@ class DeviceFlow(BaseFlow):
             print(f"Go to: {code['uri']}")
             print(f"Code:  {code['user_code']}")
         """
-        init = await self._authorize()
+        init = await self.provider.device_authorization()
         uri = init.get("verification_uri_complete") or init["verification_uri"]
         return DeviceCode(
             uri=uri,
@@ -657,71 +573,13 @@ class DeviceFlow(BaseFlow):
 
     # -- Internals ------------------------------------------------------
 
-    async def _authorize(self) -> Dict[str, Any]:
-        """Start device authorization; return the raw init payload."""
-        url = build_url(self.config.host, self.config.device_route)
-        payload = await self._post_form(url)
-        for k in (
-            "device_code",
-            "user_code",
-            "verification_uri",
-            "expires_in",
-        ):
-            if k not in payload:
-                raise AuthError(
-                    f"Device authorization missing '{k}'",
-                    status_code=502,
-                )
-        return payload
-
-    async def _poll_for_token(
-        self,
-        *,
-        device_code: str,
-        base_interval: int,
-    ) -> Dict[str, Any]:
-        """Poll until approved, denied, or expired."""
-        url = build_url(self.config.host, self.config.token_route)
-        start = time.monotonic()
-        interval = max(1, base_interval)
-        with clock(self.timeout, self.interactive):
-            while True:
-                sleep = interval + random.uniform(-0.2, 0.4)
-                if (
-                    self.timeout is not None
-                    and time.monotonic() - start > self.timeout
-                ):
-                    raise AuthError(
-                        "Login did not complete within the allotted "
-                        "time; approve the request in your browser "
-                        "and try again."
-                    )
-                data = {"device-code": device_code}
-                try:
-                    return await self._post_form(url, data)
-                except AuthError as error:
-                    err = (
-                        error.detail.get("error")
-                        if isinstance(error.detail, dict)
-                        else None
-                    )
-                    if err is None or "authorization_pending" in err:
-                        await asleep(sleep)
-                    elif "slow_down" in err:
-                        interval += 5
-                        await asleep(sleep)
-                    elif "expired_token" in err or "access_denied" in err:
-                        raise AuthError(f"Device flow failed: {err}")
-                    else:
-                        raise  # pragma: no cover
-
     async def _run_device_flow(
         self,
         *,
         auto_open: bool = True,
     ) -> Token:
         """Run the complete device flow with user prompts."""
-        init = await self._authorize()
+        init = await self.provider.device_authorization()
         uri = init.get("verification_uri_complete") or init["verification_uri"]
         user_code = init["user_code"]
 
@@ -747,6 +605,44 @@ class DeviceFlow(BaseFlow):
             base_interval=int(init.get("interval", 5)),
         )
         return self._build_token(raw)
+
+    async def _poll_for_token(
+        self,
+        device_code: str,
+        base_interval: int = 5,
+    ) -> Dict[str, Any]:
+        """Poll a device token."""
+        start = time.monotonic()
+        interval = max(1, base_interval)
+        with clock(self.provider.timeout, self.interactive):
+            while True:
+                sleep = interval + random.uniform(-0.2, 0.4)
+                if (
+                    self.provider.timeout is not None
+                    and time.monotonic() - start > self.provider.timeout
+                ):
+                    raise AuthError(
+                        "Login did not complete within the allotted "
+                        "time; approve the request in your browser "
+                        "and try again."
+                    )
+                try:
+                    return await self.provider.get_device_token(device_code)
+                except AuthError as error:
+                    err = (
+                        error.detail.get("error")
+                        if isinstance(error.detail, dict)
+                        else None
+                    )
+                    if err is None or err == "authorization_pending":
+                        await asleep(sleep)
+                    elif "slow_down" in err:
+                        interval += 5
+                        await asleep(sleep)
+                    elif err in {"expired_token", "access_denied"}:
+                        raise AuthError(f"Device flow failed: {err}")
+                    else:
+                        raise  # pragma: no cover
 
 
 # -----------------------------------------------------------------------
@@ -830,7 +726,7 @@ class CodeFlow(BaseFlow):
             return self.token
         if strategy == "refresh_token" and self.token:
             try:
-                return await self.refresh(self.token["refresh_token"])
+                return await self.refresh(self.token.get("refresh_token", ""))
             except AuthError:
                 logger.info("Refresh failed, falling back to code flow")
 
@@ -847,7 +743,9 @@ class CodeFlow(BaseFlow):
             logger.info("Waiting for browser callback on port %s ...", port)
             while not event.is_set():
                 server.handle_request()
-                if getattr(server, "auth_code", None):
+                if getattr(server, "auth_code", None) or getattr(
+                    server, "auth_error", None
+                ):
                     event.set()
 
         thread = Thread(target=handle, daemon=True)
@@ -856,7 +754,7 @@ class CodeFlow(BaseFlow):
 
     def _find_free_port(self) -> int:
         """Find a free port from the configured redirect ports."""
-        for port in self.config.redirect_ports:
+        for port in self.provider.config.redirect_ports:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 try:
                     s.bind(("localhost", port))
@@ -878,22 +776,15 @@ class CodeFlow(BaseFlow):
                 except OSError:
                     pass
             await asleep(0.05)
-        raise TimeoutError(
-            f"Port {port} on {host} did not open within {timeout}s."
-        )
+        raise TimeoutError(f"Port {port} on {host} did not open within {timeout}s.")
 
     async def _run_code_flow(self) -> Token:
         """Run the full browser based code flow."""
-        login_url_base = build_url(self.config.host, self.config.login_route)
-        token_url = build_url(self.config.host, self.config.token_route)
         port = self._find_free_port()
         redirect_uri = REDIRECT_URI.format(port=port)
-        params = {
-            "redirect_uri": redirect_uri,
-            "offline_access": "true",
-            "prompt": "consent",
-        }
-        login_url = f"{login_url_base}?{urllib.parse.urlencode(params)}"
+        login_url = await self.provider.get_authorization_url(
+            redirect_uri=redirect_uri,
+        )
         pprint("Opening browser for login: {b}{url}{b_end}\n", url=login_url)
         pprint(
             "If you are on a remote host, forward port {b}{port:d}{b_end}:\n"
@@ -906,19 +797,28 @@ class CodeFlow(BaseFlow):
         event = Event()
         server = self._start_local_server(port, event)
         code: Optional[str] = None
-        code_verifier: Optional[str] = None
+        state: Optional[str] = None
         reason = "Login failed."
         try:
             await self._wait_for_port("localhost", port)
             webbrowser.open(login_url)
-            success = event.wait(timeout=self.timeout or None)
+            success = event.wait(timeout=self.provider.timeout or None)
             if not success:
                 raise TimeoutError(
-                    f"Login did not complete within {self.timeout}s. "
+                    f"Login did not complete within {self.provider.timeout}s. "
                     "Possibly headless environment."
                 )
-            code = getattr(server, "auth_code", None)
-            code_verifier = getattr(server, "code_verifier", None)
+            auth_error = getattr(server, "auth_error", None)
+            if auth_error:
+                description = getattr(
+                    server,
+                    "auth_error_description",
+                    None,
+                )
+                reason = str(description)
+            else:
+                code = getattr(server, "auth_code", None)
+                state = getattr(server, "auth_state", None)
         except Exception as error:
             logger.warning(
                 "Could not open browser automatically. %s "
@@ -935,12 +835,7 @@ class CodeFlow(BaseFlow):
 
         if not code:
             raise AuthError(reason)
-
-        data = {
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "grant_type": "authorization_code",
-            "code_verifier": code_verifier or None,
-        }
-        raw = await self._post_form(token_url, data)
+        raw = await self.provider.exchange_authorization_code(
+            redirect_uri=redirect_uri, code=code, state=state
+        )
         return self._build_token(raw)

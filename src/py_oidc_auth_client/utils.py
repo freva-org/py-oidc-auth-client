@@ -33,25 +33,25 @@ DEFAULT_APP_NAME = "py-oidc-auth"
 
 def pprint(text: str, **args: Union[str, int]) -> None:
     """Pritty print a text to stderr."""
-    console = rich.console.Console(
-        force_terminal=is_interactive_shell(), stderr=True
-    )
-    _pprint = (
-        console.print if console.is_terminal else partial(print, file=sys.stderr)
-    )
+    console = rich.console.Console(force_terminal=is_interactive_shell(), stderr=True)
+    _pprint = console.print if console.is_terminal else partial(print, file=sys.stderr)
     b, b_end = ("[b]", "[/b]") if console.is_terminal else ("", "")
     _pprint(text.format(b=b, b_end=b_end, **args))
 
 
 @dataclass
 class Config:
-    """Connection and routing configuration for an OIDC enabled server.
+    """Connection and routing configuration for a py-oidc-auth enabled server.
 
     Parameters
     ----------
     host : str
         Base URL of the application server
         (e.g. ``"https://myapp.example.com"``).
+    backend: str, py-oidc-auth, oidc
+        The IDP backend that is used. py-oidc-auth assumes a endpoints
+        py-oidc-auth of a oidc-auth server while oidc gets its Configuration
+        from a discovery document following oidc protocol.
     redirect_ports : list of int, optional
         Ports to try when starting a local HTTP server for the
         authorization code callback.  The first available port is used.
@@ -67,6 +67,19 @@ class Config:
         Server side route for the token exchange endpoint.
     device_route : str
         Server side route for the device authorization endpoint.
+    discovery_route: str, default: .well-known/openid-configuration
+        Route of the disevery document, relative to the ``url`` parameter.
+    scopes: list[str], optional
+        Scopes for OIDC connections (not for py-oidc-auth).
+    client_id: str, optional
+        OIDC Client id used for oidc backens (not for py-oidc-auth).
+        Defaults to ``app_name``.
+    client_secret: str, default: None
+        OIDC Client secret used for oidc backnes (not for py-oid-auth)
+        this is only needed for client_id/client_secret based authentication.
+    server_key: Path, str: default None
+        Path to the server key file (if any) for private key / public cert
+        based authentication (only for oidc backends).
 
     Examples
     --------
@@ -74,13 +87,30 @@ class Config:
 
         from py_oidc_auth_client.utils import Config
 
-        cfg = Config(
+        py_oidc_auth_cfg = Config(
             host="https://myapp.example.com",
             app_name="my-project",
             login_route="/auth/v2/login",
             token_route="/auth/v2/token",
             device_route="/auth/v2/device",
         )
+
+        oidc_auth_cfg = Config(
+            host="https://keycloak.exmpale.com/realm/myrealm",
+            backend="oidc",
+            app_name="my-project",
+            client_secret="my-secret"
+        )
+
+        oidc_auth_cfg_with_key = Config(
+            host="https://example.com",
+            backend="oidc",
+            discovery_route="document",
+            server_key="~/.server.key"
+        )
+
+
+
     """
 
     host: str
@@ -92,6 +122,11 @@ class Config:
     login_route: str = "/auth/v2/login"
     token_route: str = "/auth/v2/token"
     device_route: str = "/auth/v2/device"
+    discovery_document_route: str = ".well-known/openid-configuration"
+    scopes: List[str] = field(default_factory=list)
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    server_key: Optional[os.PathLike[str]] = None
 
 
 def build_url(base: str, *parts: str) -> str:
@@ -122,18 +157,12 @@ def clock(
     interactive : bool or None
         Force interactive mode on or off.  ``None`` auto detects.
     """
-    console = rich.console.Console(
-        force_terminal=is_interactive_shell(), stderr=True
-    )
+    console = rich.console.Console(force_terminal=is_interactive_shell(), stderr=True)
     txt = f"Timeout: {timeout:>3,.0f}s " if timeout else ""
     interactive = interactive if interactive is not None else console.is_terminal
     if int(os.getenv("INTERACTIVE_SESSION", str(int(interactive)))):
-        spinner = rich.spinner.Spinner(
-            "moon", text=f"[b]Waiting for code {txt}... [/]"
-        )
-        live = Live(
-            spinner, console=console, refresh_per_second=2.5, transient=True
-        )
+        spinner = rich.spinner.Spinner("moon", text=f"[b]Waiting for code {txt}... [/]")
+        live = Live(spinner, console=console, refresh_per_second=2.5, transient=True)
         try:
             live.start()
             yield
@@ -216,9 +245,7 @@ def is_interactive_auth_possible() -> bool:
     bool
         ``True`` if interactive authentication is feasible.
     """
-    return (is_interactive_shell() or is_jupyter_notebook()) and not (
-        is_job_env()
-    )
+    return (is_interactive_shell() or is_jupyter_notebook()) and not (is_job_env())
 
 
 def is_token_valid(
