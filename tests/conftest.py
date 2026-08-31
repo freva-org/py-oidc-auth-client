@@ -323,7 +323,7 @@ def test_server() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Store / singleton fixtures
+# Store fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -334,12 +334,10 @@ def tmp_store(tmp_path: Path) -> TokenStore:
 
 
 @pytest.fixture(autouse=True)
-def _reset_singletons():
-    """Reset flow singletons between tests."""
-    BaseFlow._instances.clear()
+def _reset_default_store():
+    """Reset the shared default token store between tests."""
     BaseFlow._default_store = None
     yield
-    BaseFlow._instances.clear()
     BaseFlow._default_store = None
 
 

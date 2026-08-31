@@ -12,6 +12,7 @@ from py_oidc_auth_client.utils import (
     clock,
     is_interactive_auth_possible,
     is_job_env,
+    is_jupyter_notebook,
     is_token_valid,
 )
 
@@ -143,6 +144,12 @@ class TestChooseTokenStrategy:
 
 class TestEnvironmentDetection:
     """Batch scheduler and interactivity detection."""
+
+    def test_jupyter_detection_import_failure(self):
+        import sys
+
+        with patch.dict(sys.modules, {"IPython.core.getipython": None}):
+            assert is_jupyter_notebook() is False
 
     def test_is_job_env_with_slurm(self):
         with patch.dict(os.environ, {"SLURM_JOB_ID": "12345"}):

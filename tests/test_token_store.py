@@ -2,7 +2,6 @@
 
 import json
 import os
-import stat
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -182,6 +181,13 @@ class TestTokenStorePersistence:
         mode = path.stat().st_mode & 0o777
         assert mode == 0o600
 
+
+    def test_load_non_mapping_json_returns_empty(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        path.write_text("[]", encoding="utf-8")
+        store = TokenStore(path=path)
+        assert store._load() == {}
+
     def test_atomic_write_no_leftover_tmp(self, tmp_path: Path):
         path = tmp_path / "store.json"
         store = TokenStore(path=path)
@@ -194,16 +200,18 @@ class TestTokenStorePersistence:
         path = tmp_path / "store.json"
         store = TokenStore(path=path)
         store.put("https://a.example.com", make_token())
-        # Make directory read-only so the .tmp file can't be created
-        tmp_path.chmod(stat.S_IRUSR | stat.S_IXUSR)
-        try:
-            import logging
-            with caplog.at_level(logging.WARNING, logger="py_oidc_auth_client.token_store"):
-                store.put("https://b.example.com", make_token())
-            assert "Failed to write token store" in caplog.text
-        finally:
-            # Restore permissions so pytest can clean up
-            tmp_path.chmod(stat.S_IRWXU)
+
+        import logging
+
+        with (
+            patch.object(Path, "write_text", side_effect=OSError("read only")),
+            caplog.at_level(
+                logging.WARNING, logger="py_oidc_auth_client.token_store"
+            ),
+        ):
+            store.put("https://b.example.com", make_token())
+
+        assert "Failed to write token store" in caplog.text
 
     def test_save_oserror_cleans_up_tmp(self, tmp_path: Path):
         """If the atomic rename fails, the temp file is cleaned up."""
@@ -214,3 +222,12 @@ class TestTokenStorePersistence:
             store.put("https://a.example.com", make_token())
         # The .tmp file should have been cleaned up
         assert not path.with_suffix(".tmp").exists()
+
+    def test_save_cleanup_oserror_is_ignored(self, tmp_path: Path):
+        """A cleanup failure after a write error must not escape."""
+        store = TokenStore(path=tmp_path / "store.json")
+        with (
+            patch.object(Path, "write_text", side_effect=OSError("write failed")),
+            patch.object(Path, "unlink", side_effect=OSError("cleanup failed")),
+        ):
+            store.put("https://a.example.com", make_token())
