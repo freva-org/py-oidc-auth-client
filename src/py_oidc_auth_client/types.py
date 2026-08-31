@@ -1,6 +1,7 @@
 """Type annotations."""
 
 from typing import Literal
+
 from typing_extensions import NotRequired, TypedDict
 
 AuthBackend = Literal["py-oidc-auth", "oidc"]
