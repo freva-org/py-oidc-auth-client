@@ -5,8 +5,8 @@ API reference
    :maxdepth: 2
 
    stable_public_api
-   public
    flows
+   backends
    schema
    utils
    exceptions

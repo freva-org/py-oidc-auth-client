@@ -75,7 +75,7 @@ class Config:
         OIDC Client id used for oidc backens (not for py-oidc-auth).
         Defaults to ``app_name``.
     client_secret: str, default: None
-        OIDC Client secret used for oidc backnes (not for py-oid-auth)
+        OIDC Client secret used for oidc backends (not for py-oidc-auth)
         this is only needed for client_id/client_secret based authentication.
     server_key: Path, str: default None
         Path to the server key file (if any) for private key / public cert
@@ -96,7 +96,7 @@ class Config:
         )
 
         oidc_auth_cfg = Config(
-            host="https://keycloak.exmpale.com/realm/myrealm",
+            host="https://keycloak.exmaple.com/realm/myrealm",
             backend="oidc",
             app_name="my-project",
             client_secret="my-secret"

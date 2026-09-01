@@ -256,6 +256,8 @@ class BaseFlow:
 
         Handles the various expiry field names that different OIDC
         providers use (``expires``, ``expires_in``, ``exp``, etc.).
+
+        Parameters
         ----------
         response : dict
             Raw JSON payload from the token endpoint.
