@@ -45,7 +45,7 @@ from asyncio import sleep as asleep
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, List, Optional
 
 from .backends import PyOIDCAuth
 from .exceptions import AuthError
@@ -57,6 +57,7 @@ from .utils import (
     clock,
     pprint,
 )
+from .types import TokenResponse
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +252,7 @@ class BaseFlow:
 
     def _build_token(
         self,
-        response: Dict[str, Any],
+        response: TokenResponse,
     ) -> Token:
         """Normalise a raw token response into a :class:`Token`.
 
@@ -622,7 +623,7 @@ class DeviceFlow(BaseFlow):
         self,
         device_code: str,
         base_interval: int = 5,
-    ) -> Dict[str, Any]:
+    ) -> TokenResponse:
         """Poll a device token."""
         start = time.monotonic()
         interval = max(1, base_interval)

@@ -18,12 +18,19 @@ same interface.
 import urllib.parse
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, cast
+from typing import Mapping, Optional, TypeVar, cast
 
 import httpx
 
 from .exceptions import AuthError
+from .types import DeviceAuthorizationResponse, JSONResponse, TokenResponse
 from .utils import Config, build_url
+
+OIDCResponseType = TypeVar(
+    "OIDCResponseType",
+    TokenResponse,
+    DeviceAuthorizationResponse,
+)
 
 
 @dataclass
@@ -73,7 +80,7 @@ class ProviderBackend(ABC):
     timeout: Optional[int] = None
 
     @abstractmethod
-    async def device_authorization(self) -> Dict[str, Any]:
+    async def device_authorization(self) -> DeviceAuthorizationResponse:
         """Start a device authorization request (RFC 8628).
 
         Returns
@@ -121,7 +128,7 @@ class ProviderBackend(ABC):
         """
 
     @abstractmethod
-    async def get_device_token(self, device_code: str) -> Dict[str, Any]:
+    async def get_device_token(self, device_code: str) -> TokenResponse:
         """Attempt to redeem a device code for tokens.
 
         Called repeatedly by the polling loop, so this must stay a
@@ -152,7 +159,7 @@ class ProviderBackend(ABC):
         code: str,
         redirect_uri: str,
         state: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> TokenResponse:
         """Exchange an authorization code for tokens.
 
         Parameters
@@ -179,7 +186,7 @@ class ProviderBackend(ABC):
         """
 
     @abstractmethod
-    async def refresh_token(self, token: str) -> Dict[str, Any]:
+    async def refresh_token(self, token: str) -> TokenResponse:
         """Obtain a new bearer token from a refresh token.
 
         Parameters
@@ -206,7 +213,7 @@ class ProviderBackend(ABC):
         self,
         url: str,
         data: Optional[Mapping[str, Optional[str]]] = None,
-    ) -> Dict[str, Any]:
+    ) -> JSONResponse:
         """POST form encoded data and return the JSON response.
 
         Parameters
@@ -255,7 +262,7 @@ class ProviderBackend(ABC):
                 status_code=resp.status_code,
             )
         try:
-            return cast(Dict[str, Any], resp.json())
+            return cast(JSONResponse, resp.json())
         except Exception as error:
             raise AuthError(f"Invalid JSON from {url}: {error}")
 
@@ -274,7 +281,7 @@ class PyOIDCAuth(ProviderBackend):
         ``py-oidc-auth`` service.
     """
 
-    async def device_authorization(self) -> Dict[str, Any]:
+    async def device_authorization(self) -> DeviceAuthorizationResponse:
         """Start device authorization; return the raw init payload."""
         payload = await self.post_form(self._device_authorization_endpoint)
         for k in (
@@ -288,7 +295,7 @@ class PyOIDCAuth(ProviderBackend):
                     f"Device authorization missing '{k}'",
                     status_code=502,
                 )
-        return payload
+        return cast(DeviceAuthorizationResponse, payload)
 
     async def exchange_authorization_code(
         self,
@@ -296,7 +303,7 @@ class PyOIDCAuth(ProviderBackend):
         redirect_uri: str,
         code: str,
         state: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> TokenResponse:
         """Definitions of supported authentication backends.
 
         A backend encapsulates provider specific OIDC behaviour (endpoint
@@ -320,7 +327,7 @@ class PyOIDCAuth(ProviderBackend):
             "grant_type": "authorization_code",
             "code_verifier": code_verifier,
         }
-        return await self.post_form(self._token_endpoint, data)
+        return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
 
     async def get_authorization_url(self, *, redirect_uri: str) -> str:
         """Build the URL used to start authorization code flow."""
@@ -332,17 +339,23 @@ class PyOIDCAuth(ProviderBackend):
         }
         return f"{login_url_base}?{urllib.parse.urlencode(params)}"
 
-    async def get_device_token(self, device_code: str) -> Dict[str, Any]:
+    async def get_device_token(self, device_code: str) -> TokenResponse:
         """Query a device token."""
-        return await self.post_form(
-            self._token_endpoint, data={"device-code": device_code}
+        return cast(
+            TokenResponse,
+            await self.post_form(
+                self._token_endpoint, data={"device-code": device_code}
+            ),
         )
 
-    async def refresh_token(self, token: str) -> Dict[str, Any]:
+    async def refresh_token(self, token: str) -> TokenResponse:
         """Refresh a bearer token with help of a refresh token."""
-        return await self.post_form(
-            self._token_endpoint,
-            data={"refresh-token": token},
+        return cast(
+            TokenResponse,
+            await self.post_form(
+                self._token_endpoint,
+                data={"refresh-token": token},
+            ),
         )
 
     # -- Internals -------------------------------------------------------------
