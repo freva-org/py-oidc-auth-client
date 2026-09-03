@@ -1,11 +1,12 @@
 """Tests for py_oidc_auth_client.flows."""
 
+from __future__ import annotations
+
 import socket
 import threading
 import time
-from pathlib import Path
-from typing import Any, Dict
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import jwt
@@ -13,35 +14,34 @@ import pytest
 import requests
 
 from py_oidc_auth_client.exceptions import AuthError
-from py_oidc_auth_client.flows import BaseFlow, CodeFlow, DeviceFlow
+from py_oidc_auth_client.flows import CodeFlow, DeviceFlow
 from py_oidc_auth_client.token_store import TokenStore
-from py_oidc_auth_client.utils import build_url
 
 from .conftest import (
     MockTransport,
-    make_expired_token,
     make_raw_token_response,
     make_refresh_only_token,
     make_token,
 )
 
 
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
 # ======================================================================
-# BaseFlow: singleton, token cache, session, shared helpers
+# BaseFlow: construction, token cache, shared helpers
 # ======================================================================
 
 
-class TestBaseFlowSingleton:
-    """Per host singleton behaviour."""
+class TestBaseFlowConstruction:
+    """Flow construction and default-store behaviour."""
 
-    def test_same_host_same_instance(self, tmp_store: TokenStore):
+    def test_same_host_creates_distinct_instances(self, tmp_store: TokenStore):
         a = DeviceFlow("https://a.example.com", store=tmp_store)
         b = DeviceFlow("https://a.example.com", store=tmp_store)
-        assert a is b
-
-    def test_different_host_different_instance(self, tmp_store: TokenStore):
-        a = DeviceFlow("https://a.example.com", store=tmp_store)
-        b = DeviceFlow("https://b.example.com", store=tmp_store)
         assert a is not b
 
     def test_different_subclass_different_instance(self, tmp_store: TokenStore):
@@ -49,42 +49,15 @@ class TestBaseFlowSingleton:
         c = CodeFlow("https://a.example.com", store=tmp_store)
         assert d is not c
 
-    def test_reset_instances(self, tmp_store: TokenStore):
-        a = DeviceFlow("https://a.example.com", store=tmp_store)
-        BaseFlow.reset_instances()
-        b = DeviceFlow("https://a.example.com", store=tmp_store)
-        assert a is not b
-
-    def test_host_normalised_for_singleton(self, tmp_store: TokenStore):
-        a = DeviceFlow("https://Example.COM:443/", store=tmp_store)
-        b = DeviceFlow("https://example.com", store=tmp_store)
-        assert a is b
-
-    def test_default_store_created_when_none_passed(self):
-        """Covers _get_default_store branch."""
-        flow = DeviceFlow("https://default-store.example.com")
-        assert flow.store is not None
-        assert isinstance(flow.store, TokenStore)
-
-
-class TestBaseFlowSession:
-    """Lazy httpx.AsyncClient creation."""
-
-    def test_session_property_creates_client(self, tmp_store: TokenStore):
-        """Covers the session property lazy init branch."""
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = None  # ensure not pre-set
-        session = flow.session
-        assert isinstance(session, httpx.AsyncClient)
-
-    @pytest.mark.asyncio
-    async def test_session_recreated_when_closed(self, tmp_store: TokenStore):
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient()
-        await flow._session.aclose()
-        new_session = flow.session
-        assert isinstance(new_session, httpx.AsyncClient)
-        assert not new_session.is_closed
+    def test_default_store_created_and_reused(self):
+        a = DeviceFlow("https://a.example.com")
+        b = DeviceFlow("https://b.example.com")
+        code = CodeFlow("https://a.example.com")
+        assert isinstance(a.store, TokenStore)
+        assert a.store is b.store
+        # Different flow subclasses have distinct TokenStore objects, but the
+        # default stores point at the same persistent cache file.
+        assert a.store._path == code.store._path
 
 
 class TestBaseFlowTokenCache:
@@ -140,75 +113,6 @@ class TestBaseFlowBuildToken:
         assert token["refresh_expires"] >= now + 7199
 
 
-class TestBaseFlowPostForm:
-    """HTTP POST helper — success, error, and edge cases."""
-
-    @pytest.mark.asyncio
-    async def test_success(self, tmp_store: TokenStore):
-        transport = MockTransport().add(200, {"result": "ok"})
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient(transport=transport)
-        result = await flow._post_form("https://a.example.com/token")
-        assert result == {"result": "ok"}
-
-    @pytest.mark.asyncio
-    async def test_http_error_with_json_body(self, tmp_store: TokenStore):
-        transport = MockTransport().add(401, {"error": "invalid_client"})
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient(transport=transport)
-        with pytest.raises(AuthError) as exc_info:
-            await flow._post_form("https://a.example.com/token")
-        assert exc_info.value.status_code == 401
-        assert exc_info.value.detail["error"] == "invalid_client"
-
-    @pytest.mark.asyncio
-    async def test_http_error_with_non_json_body(self, tmp_store: TokenStore):
-        """Covers the except branch in _post_form for unparseable error bodies."""
-        transport = MockTransport().add(500, b"Internal Server Error")
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient(transport=transport)
-        with pytest.raises(AuthError) as exc_info:
-            await flow._post_form("https://a.example.com/token")
-        assert exc_info.value.status_code == 500
-        assert "http_error" in exc_info.value.detail["error"]
-
-    @pytest.mark.asyncio
-    async def test_success_with_non_json_body(self, tmp_store: TokenStore):
-        """Covers the except branch for non-JSON 2xx responses."""
-        transport = MockTransport().add(200, b"not json at all")
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient(transport=transport)
-        with pytest.raises(AuthError, match="Invalid JSON"):
-            await flow._post_form("https://a.example.com/token")
-
-    @pytest.mark.asyncio
-    async def test_sends_form_encoded(self, tmp_store: TokenStore):
-        transport = MockTransport().add(200, {"ok": True})
-        flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient(transport=transport)
-        await flow._post_form(
-            "https://a.example.com/token", data={"grant_type": "device_code"}
-        )
-        req = transport.requests[0]
-        assert b"grant_type=device_code" in req.content
-
-    @pytest.mark.asyncio
-    async def test_against_test_server_non_json_error(self, test_server: str, tmp_store: TokenStore):
-        """Real HTTP to the test server's non-JSON error endpoint."""
-        flow = DeviceFlow(test_server, store=tmp_store)
-        with pytest.raises(AuthError) as exc_info:
-            await flow._post_form(f"{test_server}/_test/non_json_error")
-        assert exc_info.value.status_code == 500
-        assert "http_error" in exc_info.value.detail["error"]
-
-    @pytest.mark.asyncio
-    async def test_against_test_server_non_json_ok(self, test_server: str, tmp_store: TokenStore):
-        """Real HTTP to the test server's non-JSON success endpoint."""
-        flow = DeviceFlow(test_server, store=tmp_store)
-        with pytest.raises(AuthError, match="Invalid JSON"):
-            await flow._post_form(f"{test_server}/_test/non_json_ok")
-
-
 # ======================================================================
 # DeviceFlow
 # ======================================================================
@@ -245,7 +149,7 @@ class TestDeviceFlowGetDeviceCode:
             200, {"verification_uri": "https://a.com", "expires_in": 60}
         )
         flow = DeviceFlow("https://a.example.com", store=tmp_store)
-        flow._session = httpx.AsyncClient(transport=transport)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
         with pytest.raises(AuthError, match="device_code"):
             await flow.get_device_code()
 
@@ -266,31 +170,25 @@ class TestDeviceFlowPoll:
 
     @pytest.mark.asyncio
     async def test_access_denied_raises(self, tmp_store: TokenStore):
-        transport = MockTransport().add(
-            400, {"error": "access_denied"}
-        )
+        transport = MockTransport().add(400, {"error": "access_denied"})
         flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=5)
-        flow._session = httpx.AsyncClient(transport=transport)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
         with pytest.raises(AuthError, match="access_denied"):
             await flow.poll("DEV-123", interval=0)
 
     @pytest.mark.asyncio
     async def test_expired_token_raises(self, tmp_store: TokenStore):
-        transport = MockTransport().add(
-            400, {"error": "expired_token"}
-        )
+        transport = MockTransport().add(400, {"error": "expired_token"})
         flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=5)
-        flow._session = httpx.AsyncClient(transport=transport)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
         with pytest.raises(AuthError, match="expired_token"):
             await flow.poll("DEV-123", interval=0)
 
     @pytest.mark.asyncio
     async def test_timeout_raises(self, tmp_store: TokenStore):
-        transport = MockTransport().add(
-            400, {"error": "authorization_pending"}
-        )
+        transport = MockTransport().add(400, {"error": "authorization_pending"})
         flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=0)
-        flow._session = httpx.AsyncClient(transport=transport)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
         with pytest.raises(AuthError, match="allotted time"):
             await flow.poll("DEV-123", interval=0)
 
@@ -300,7 +198,7 @@ class TestDeviceFlowPoll:
         transport.add(400, {"error": "slow_down"})
         transport.add(200, make_raw_token_response())
         flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=30)
-        flow._session = httpx.AsyncClient(transport=transport)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
         token = await flow.poll("DEV-123", interval=0)
         assert "access_token" in token
 
@@ -414,9 +312,7 @@ class TestDeviceFlowRefresh:
         assert "access_token" in token
 
     @pytest.mark.asyncio
-    async def test_refresh_failure(
-        self, test_server: str, tmp_store: TokenStore
-    ):
+    async def test_refresh_failure(self, test_server: str, tmp_store: TokenStore):
         flow = DeviceFlow(test_server, store=tmp_store, timeout=5)
         with pytest.raises(AuthError):
             await flow.refresh("totally_invalid_refresh_token")
@@ -439,6 +335,28 @@ class TestCodeFlowAuthenticate:
         assert result["access_token"] == token["access_token"]
 
     @pytest.mark.asyncio
+    async def test_without_cached_token_runs_code_flow(
+        self,
+        tmp_store: TokenStore,
+    ):
+        """No cached token falls through directly to the code flow."""
+        flow = CodeFlow(
+            "https://a.example.com",
+            store=tmp_store,
+        )
+        expected = make_token()
+
+        with patch.object(
+            flow,
+            "_run_code_flow",
+            return_value=expected,
+        ) as mock_run:
+            result = await flow.authenticate()
+
+        mock_run.assert_awaited_once()
+        assert result == expected
+
+    @pytest.mark.asyncio
     async def test_refresh_against_test_server(
         self, test_server: str, tmp_store: TokenStore, configure_server
     ):
@@ -459,7 +377,9 @@ class TestCodeFlowAuthenticate:
         tmp_store.put(test_server, old_token)
         flow = CodeFlow(test_server, store=tmp_store, timeout=5)
         # _run_code_flow will be called; mock it to avoid browser
-        with patch.object(flow, "_run_code_flow", return_value=make_token()) as mock_run:
+        with patch.object(
+            flow, "_run_code_flow", return_value=make_token()
+        ) as mock_run:
             result = await flow.authenticate()
         mock_run.assert_called_once()
         assert "access_token" in result
@@ -471,7 +391,6 @@ class TestCodeFlowWaitForPort:
     @pytest.mark.asyncio
     async def test_success(self):
         """Start a server, then wait for its port."""
-        import http.server
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.bind(("127.0.0.1", 0))
@@ -493,6 +412,32 @@ class TestCodeFlowWaitForPort:
         with pytest.raises(TimeoutError, match="did not open"):
             await CodeFlow._wait_for_port("127.0.0.1", port, timeout=0.3)
 
+    @pytest.mark.asyncio
+    async def test_socket_oserror_is_retried(self):
+        """Socket errors while probing are ignored until timeout."""
+
+        class BrokenSocket:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def settimeout(self, timeout):
+                pass
+
+            def connect_ex(self, address):
+                raise OSError("network unavailable")
+
+        with (
+            patch(
+                "py_oidc_auth_client.flows.socket.socket", return_value=BrokenSocket()
+            ),
+            patch("py_oidc_auth_client.flows.time.time", side_effect=[0.0, 0.0, 2.0]),
+        ):
+            with pytest.raises(TimeoutError, match="did not open"):
+                await CodeFlow._wait_for_port("127.0.0.1", 12345, timeout=1.0)
+
 
 class TestCodeFlowFindFreePort:
     """Port selection from config list."""
@@ -500,13 +445,13 @@ class TestCodeFlowFindFreePort:
     def test_finds_a_free_port(self, tmp_store: TokenStore):
         flow = CodeFlow("https://a.example.com", store=tmp_store)
         port = flow._find_free_port()
-        assert port in flow.config.redirect_ports
+        assert port in flow.provider.config.redirect_ports
 
     def test_all_busy_raises(self, tmp_store: TokenStore):
         flow = CodeFlow("https://a.example.com", store=tmp_store)
         sockets = []
         try:
-            for p in flow.config.redirect_ports:
+            for p in flow.provider.config.redirect_ports:
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 try:
                     s.bind(("localhost", p))
@@ -530,12 +475,38 @@ class TestCodeFlowCallbackServer:
         server = CodeFlow._start_local_server(port, event)
         try:
             resp = requests.get(
-                f"http://localhost:{port}/callback?code=TEST-CODE-123",
+                f"http://localhost:{port}/callback?code=TEST-CODE-123&state=opaque%7Cverifier",
                 timeout=3,
             )
             assert resp.status_code == 200
             event.wait(timeout=2)
             assert getattr(server, "auth_code", None) == "TEST-CODE-123"
+            assert getattr(server, "auth_state", None) == "opaque|verifier"
+        finally:
+            server.server_close()
+
+    def test_callback_captures_authorization_error(self, tmp_store: TokenStore):
+        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        port = flow._find_free_port()
+        event = threading.Event()
+        server = CodeFlow._start_local_server(port, event)
+        try:
+            resp = requests.get(
+                (
+                    f"http://localhost:{port}/callback?"
+                    "error=access_denied&"
+                    "error_description=User+denied+access&"
+                    "state=opaque-state"
+                ),
+                timeout=3,
+            )
+            assert resp.status_code == 400
+            assert event.wait(timeout=2)
+            assert getattr(server, "auth_error", None) == "access_denied"
+            assert (
+                getattr(server, "auth_error_description", None) == "User denied access"
+            )
+            assert getattr(server, "auth_state", None) == "opaque-state"
         finally:
             server.server_close()
 
@@ -551,6 +522,13 @@ class TestCodeFlowCallbackServer:
             )
             assert resp.status_code == 400
             assert not event.is_set()
+            # Stop the callback-server thread cleanly so this test does not
+            # leave one of the configured redirect ports occupied.
+            requests.get(
+                f"http://localhost:{port}/callback?code=CLEANUP",
+                timeout=3,
+            )
+            assert event.wait(timeout=2)
         finally:
             server.server_close()
 
@@ -567,7 +545,12 @@ class TestCodeFlowRunCodeFlow:
         self, test_server: str, tmp_store: TokenStore
     ):
         """End-to-end: local server -> redirect -> code exchange -> token."""
-        flow = CodeFlow(test_server, store=tmp_store, timeout=10)
+        flow = CodeFlow(
+            test_server,
+            store=tmp_store,
+            timeout=10,
+            redirect_ports=[_free_port()],
+        )
 
         def fake_browser_open(url: str) -> None:
             """Instead of opening a browser, follow the redirect with requests."""
@@ -581,19 +564,20 @@ class TestCodeFlowRunCodeFlow:
 
         assert "access_token" in token
         assert "headers" in token
-        decoded = jwt.decode(
-            token["access_token"], options={"verify_signature": False}
-        )
+        decoded = jwt.decode(token["access_token"], options={"verify_signature": False})
         assert decoded["sub"] == "testuser"
         # Token should be persisted in the store
         assert tmp_store.get(test_server) is not None
 
     @pytest.mark.asyncio
-    async def test_code_flow_timeout(
-        self, test_server: str, tmp_store: TokenStore
-    ):
+    async def test_code_flow_timeout(self, test_server: str, tmp_store: TokenStore):
         """Browser never delivers the callback -> AuthError."""
-        flow = CodeFlow(test_server, store=tmp_store, timeout=1)
+        flow = CodeFlow(
+            test_server,
+            store=tmp_store,
+            timeout=1,
+            redirect_ports=[_free_port()],
+        )
         # webbrowser.open does nothing, so the event never gets set
         with patch("webbrowser.open"):
             with pytest.raises(AuthError, match="did not complete"):
@@ -604,7 +588,12 @@ class TestCodeFlowRunCodeFlow:
         self, test_server: str, tmp_store: TokenStore
     ):
         """_wait_for_port times out -> caught as exception -> AuthError."""
-        flow = CodeFlow(test_server, store=tmp_store, timeout=5)
+        flow = CodeFlow(
+            test_server,
+            store=tmp_store,
+            timeout=5,
+            redirect_ports=[_free_port()],
+        )
         with (
             patch.object(
                 CodeFlow,
@@ -615,6 +604,71 @@ class TestCodeFlowRunCodeFlow:
         ):
             with pytest.raises(AuthError, match="port never opened"):
                 await flow._run_code_flow()
+
+    @pytest.mark.asyncio
+    async def test_code_flow_authorization_error(
+        self, test_server: str, tmp_store: TokenStore
+    ):
+        """An OAuth error returned by the callback is surfaced."""
+        flow = CodeFlow(
+            test_server,
+            store=tmp_store,
+            timeout=5,
+            redirect_ports=[_free_port()],
+        )
+
+        def fake_server(port, event):
+            event.set()
+            return SimpleNamespace(
+                auth_error="access_denied",
+                auth_error_description="User denied access",
+            )
+
+        with (
+            patch.object(flow, "_start_local_server", side_effect=fake_server),
+            patch.object(CodeFlow, "_wait_for_port", new=AsyncMock()),
+            patch("webbrowser.open"),
+        ):
+            with pytest.raises(AuthError, match="User denied access"):
+                await flow._run_code_flow()
+
+    @pytest.mark.asyncio
+    async def test_code_flow_server_close_failure_is_ignored(
+        self, test_server: str, tmp_store: TokenStore
+    ):
+        """Failure to close the callback server does not hide a valid login."""
+        flow = CodeFlow(
+            test_server,
+            store=tmp_store,
+            timeout=5,
+            redirect_ports=[_free_port()],
+        )
+
+        def close_fails():
+            raise OSError("close failed")
+
+        def fake_server(port, event):
+            event.set()
+            return SimpleNamespace(
+                auth_code="CODE-1",
+                auth_state="opaque|verifier",
+                server_close=close_fails,
+            )
+
+        raw = make_raw_token_response()
+        with (
+            patch.object(flow, "_start_local_server", side_effect=fake_server),
+            patch.object(CodeFlow, "_wait_for_port", new=AsyncMock()),
+            patch("webbrowser.open"),
+            patch.object(
+                flow.provider,
+                "exchange_authorization_code",
+                new=AsyncMock(return_value=raw),
+            ),
+        ):
+            token = await flow._run_code_flow()
+
+        assert token["access_token"] == raw["access_token"]
 
     @pytest.mark.asyncio
     async def test_code_flow_no_free_port(

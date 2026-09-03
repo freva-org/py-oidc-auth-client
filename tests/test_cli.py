@@ -1,5 +1,7 @@
 """Tests for py_oidc_auth_client.__main__ CLI."""
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -10,7 +12,7 @@ from py_oidc_auth_client.__main__ import main
 from py_oidc_auth_client.exceptions import AuthError
 from py_oidc_auth_client.token_store import TokenStore
 
-from .conftest import make_expired_token, make_token
+from .conftest import make_token
 
 
 class TestCLIStoreManagement:

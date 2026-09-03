@@ -7,6 +7,8 @@ is reachable on ``http://127.0.0.1:<free_port>``.  Tests make real HTTP
 requests against it — no httpx mocking required for the happy paths.
 """
 
+from __future__ import annotations
+
 import json
 import socket
 import threading
@@ -107,9 +109,7 @@ class MockTransport(httpx.AsyncBaseTransport):
         self.responses.append((status, body))
         return self
 
-    async def handle_async_request(
-        self, request: httpx.Request
-    ) -> httpx.Response:
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if len(self.responses) > 1:
             status, body = self.responses.pop(0)
@@ -167,9 +167,7 @@ def create_test_app() -> FastAPI:
                 status_code=503,
             )
         device_code = f"DEV-{uuid.uuid4().hex[:8]}"
-        user_code = (
-            f"{uuid.uuid4().hex[:4].upper()}-" f"{uuid.uuid4().hex[:4].upper()}"
-        )
+        user_code = f"{uuid.uuid4().hex[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
         app.state.device_codes[device_code] = {
             "user_code": user_code,
             "polls_remaining": app.state.pending_polls,
@@ -180,9 +178,7 @@ def create_test_app() -> FastAPI:
                 "device_code": device_code,
                 "user_code": user_code,
                 "verification_uri": f"{base}/verify",
-                "verification_uri_complete": (
-                    f"{base}/verify?user_code={user_code}"
-                ),
+                "verification_uri_complete": (f"{base}/verify?user_code={user_code}"),
                 "expires_in": 600,
                 "interval": 0,
             }
@@ -323,7 +319,7 @@ def test_server() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Store / singleton fixtures
+# Store fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -334,12 +330,10 @@ def tmp_store(tmp_path: Path) -> TokenStore:
 
 
 @pytest.fixture(autouse=True)
-def _reset_singletons():
-    """Reset flow singletons between tests."""
-    BaseFlow._instances.clear()
+def _reset_default_store():
+    """Reset the shared default token store between tests."""
     BaseFlow._default_store = None
     yield
-    BaseFlow._instances.clear()
     BaseFlow._default_store = None
 
 

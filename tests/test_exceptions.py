@@ -1,5 +1,7 @@
 """Tests for py_oidc_auth_client.exceptions."""
 
+from __future__ import annotations
+
 import pytest
 
 from py_oidc_auth_client.exceptions import AuthError
