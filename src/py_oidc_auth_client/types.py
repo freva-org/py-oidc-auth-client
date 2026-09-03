@@ -63,16 +63,9 @@ class OIDCDiscoveryDocument(TypedDict):
     grant_types_supported: NotRequired[list[str]]
     token_endpoint_auth_methods_supported: NotRequired[list[str]]
 
-JSONValue = (
-    str
-    | int
-    | float
-    | bool
-    | None
-    | list["JSONValue"]
-    | dict[str, "JSONValue"]
-)
-"""JSON Body response."""
+
+JSONValue = str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
+
 
 JSONResponse = dict[str, JSONValue]
 """Nested JSON Body response."""
