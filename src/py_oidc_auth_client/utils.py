@@ -96,7 +96,7 @@ class Config:
         )
 
         oidc_auth_cfg = Config(
-            host="https://keycloak.exmaple.com/realm/myrealm",
+            host="https://keycloak.example.com/realm/myrealm",
             backend="oidc",
             app_name="my-project",
             client_secret="my-secret"

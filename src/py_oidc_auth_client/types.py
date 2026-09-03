@@ -1,6 +1,6 @@
 """Type annotations."""
 
-from typing import Literal
+from typing import Dict, List, Literal, Union
 
 from typing_extensions import NotRequired, TypedDict
 
@@ -8,7 +8,7 @@ AuthBackend = Literal["py-oidc-auth", "oidc"]
 
 
 class DeviceAuthorizationResponse(TypedDict):
-    """Resonse body from the OOIDC device endpoint query."""
+    """Response body from the OOIDC device endpoint query."""
 
     device_code: str
     user_code: str
@@ -19,7 +19,7 @@ class DeviceAuthorizationResponse(TypedDict):
 
 
 class TokenResponse(TypedDict):
-    """Resonse body from the OOIDC token endpoint query."""
+    """Response body from the OOIDC token endpoint query."""
 
     access_token: str
     token_type: NotRequired[str]
@@ -38,7 +38,7 @@ class TokenResponse(TypedDict):
 
 
 class OAuthErrorResponse(TypedDict):
-    """Resonse body for an OAuthError."""
+    """Response body for an OAuthError."""
 
     error: str
     error_description: NotRequired[str]
@@ -64,7 +64,9 @@ class OIDCDiscoveryDocument(TypedDict):
     token_endpoint_auth_methods_supported: NotRequired[list[str]]
 
 
-JSONValue = str | int | float | bool | None | list["JSONValue"] | dict[str, "JSONValue"]
+JSONValue = Union[
+    str, int, float, bool, None, List["JSONValue"], Dict[str, "JSONValue"]
+]
 
 
 JSONResponse = dict[str, JSONValue]
