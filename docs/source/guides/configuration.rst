@@ -30,8 +30,8 @@ Example:
 --------------
 
 :class:`py_oidc_auth_client.TokenStore` controls where tokens are persisted between runs.
-It separates tokens by host internally, so one store file can usually serve several auth
-servers safely. ``authenticate()``, ``CodeFlow``, and ``DeviceFlow`` obtain tokens. ``TokenStore`` keeps
+It separates tokens by identity internally, so one store can usually serve several auth
+servers, clients and grants safely. ``authenticate()``, ``CodeFlow``, and ``DeviceFlow`` obtain tokens. ``TokenStore`` keeps
 those tokens available between runs so the client can:
 
 Use it when you want:
@@ -39,7 +39,7 @@ Use it when you want:
 * a predictable token cache path
 * separate storage per application or environment
 * refresh-token based reuse in remote or automated sessions
-* one shared host-aware token database for the same tool
+* one shared token database for the same tool
 
 .. code-block:: python
 
@@ -47,7 +47,7 @@ Use it when you want:
 
    token = authenticate(
        host="https://auth.example.org",
-       store=TokenStore(app_anme="my-app"),
+       store=TokenStore(app_name="my-app"),
    )
 
 
@@ -60,14 +60,15 @@ Best practice
 
 A dedicated store per tool or environment is often the safest layout.
 Separate stores are usually about operational boundaries such as
-dev vs. prod, not about host separation.
+dev vs. prod, not about separating hosts or identities, which the store already
+handles for you.
 
 .. code-block:: python
 
    from py_oidc_auth_client import TokenStore, authenticate
 
-   prod_store = TokenStore(path="my-app")
-   dev_store = TokenStore(path="~/.cache/py-oidc-auth-client/dev.json")
+   prod_store = TokenStore(app_name="my-app")
+   dev_store = TokenStore(path="~/.cache/py-oidc-auth-client/dev")
 
    dev_token = authenticate(
        host="https://auth-dev.example.org",

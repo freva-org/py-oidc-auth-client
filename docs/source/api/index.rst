@@ -7,6 +7,8 @@ API reference
    stable_public_api
    flows
    backends
+   identity
+   token_store
    schema
    utils
    exceptions

@@ -16,7 +16,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 import httpx
@@ -26,6 +26,7 @@ import uvicorn
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
+from py_oidc_auth_client.identity import AuthIdentity, Grant
 from py_oidc_auth_client.flows import BaseFlow
 from py_oidc_auth_client.schema import Token
 from py_oidc_auth_client.token_store import TokenStore
@@ -63,11 +64,17 @@ def make_token(
     *,
     expires_in: int = 300,
     refresh_expires_in: int = 3600,
+    subject: str = "testuser",
 ) -> Token:
-    """Build a normalised Token as the client library stores it."""
+    """Build a normalised Token as the client library stores it.
+
+    *subject* varies the encoded JWT so that two tokens minted in the
+    same second are distinguishable, which matters for tests asserting
+    that separate identities do not share a cache entry.
+    """
     now = int(time.time())
     access_token = jwt.encode(
-        {"sub": "testuser", "iat": now, "exp": now + expires_in}, JWT_SECRET
+        {"sub": subject, "iat": now, "exp": now + expires_in}, JWT_SECRET
     )
     return Token(
         access_token=access_token,
@@ -86,6 +93,28 @@ def make_expired_token() -> Token:
 
 def make_refresh_only_token() -> Token:
     return make_token(expires_in=-300, refresh_expires_in=3600)
+
+
+def make_access_only_token(
+    *, expires_in: int = 300, subject: str = "testuser"
+) -> Token:
+    """A token with no refresh token, as client credentials and token
+    exchange usually return."""
+    token = make_token(expires_in=expires_in, subject=subject)
+    token.pop("refresh_token", None)
+    token.pop("refresh_expires", None)
+    return token
+
+
+def make_identity(
+    *,
+    host: str = "https://myapp.example.com",
+    backend: str = "oidc",
+    grant: Optional[Grant] = Grant.DEVICE_CODE,
+    **kwargs: Any,
+) -> AuthIdentity:
+    """Build an AuthIdentity with defaults suited to the tests."""
+    return AuthIdentity(host=host, backend=backend, grant=grant, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +354,8 @@ def test_server() -> str:
 
 @pytest.fixture()
 def tmp_store(tmp_path: Path) -> TokenStore:
-    """A TokenStore backed by a temp file."""
-    return TokenStore(path=tmp_path / "tokens.json")
+    """A TokenStore backed by a temp directory."""
+    return TokenStore(path=tmp_path / "tokens")
 
 
 @pytest.fixture(autouse=True)

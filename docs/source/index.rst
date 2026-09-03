@@ -32,7 +32,7 @@ Key features
 * A simple high level helper :func:`py_oidc_auth_client.authenticate`
 * Authorization code flow with a local browser callback
 * Device flow for headless sessions
-* Persistent host-aware token storage with :class:`py_oidc_auth_client.TokenStore`
+* Persistent identity-aware token storage with :class:`py_oidc_auth_client.TokenStore`
 * Token caching and refresh token support
 * Fully typed public API
 
@@ -108,8 +108,10 @@ Quick start
 .. dropdown:: Token storage with ``TokenStore``
     :icon: code
 
-    A single ``TokenStore`` can safely hold tokens for multiple hosts because entries are
-    separated by host internally.
+    A single ``TokenStore`` can safely hold tokens for multiple hosts, and for several
+    identities on the same host, because entries are keyed by an
+    :class:`py_oidc_auth_client.AuthIdentity`: the host together with the grant, client,
+    scopes and audience that produced the token.
 
     .. code-block:: python
 

@@ -57,7 +57,7 @@ class TestBaseFlowConstruction:
         assert a.store is b.store
         # Different flow subclasses have distinct TokenStore objects, but the
         # default stores point at the same persistent cache file.
-        assert a.store._path == code.store._path
+        assert a.store.path == code.store.path
 
 
 class TestBaseFlowTokenCache:

@@ -6,7 +6,7 @@
 - /en/latest/index.html : landing page and quickstart
 - /en/latest/guides/overview.html : what the library does and when to use it
 - /en/latest/guides/quickstart.html : install and first authentication
-- /en/latest/guides/token_store.html : token persistence, refresh, host-aware storage, and layout guidance
+- /en/latest/guides/token_store.html : token persistence, refresh, identity-aware storage, and layout guidance
 - /en/latest/guides/choosing_a_strategy.html : when to use authenticate, TokenStore, CodeFlow, or DeviceFlow
 - /en/latest/guides/non_interactive.html : headless and remote usage
 - /en/latest/guides/configuration.html : configuration and token storage

@@ -67,7 +67,7 @@ napoleon_include_private_with_doc = False
 
 html_static_path = ["_static"]
 html_theme = "pydata_sphinx_theme"
-html_logo = os.path.join(html_static_path[0], "logo.png")
+html_logo = os.path.join(html_static_path[0], "logo-small.png")
 templates_path = ["_templates"]
 html_favicon = os.path.join(html_static_path[0], "favicon.ico")
 html_css_files = ["custom.css"]
