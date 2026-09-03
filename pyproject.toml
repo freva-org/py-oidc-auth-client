@@ -68,7 +68,7 @@ docs = ["sphinx-execute-code-python3",
         "pydata-sphinx-theme"
         ]
 [package-data]
-freva_auth = ["py.typed"]
+py_oidc_auth_client = ["py.typed"]
 
 
 
