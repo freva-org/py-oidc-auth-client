@@ -39,6 +39,7 @@ import random
 import socket
 import time
 import urllib.parse
+import warnings
 import webbrowser
 from asyncio import sleep as asleep
 from getpass import getuser
@@ -341,6 +342,31 @@ class BaseFlow:
         if force:
             return "interactive_auth"
         return choose_token_strategy(self.token)
+
+    # -- Legacy ---------------------------------------------------------
+    @classmethod
+    def reset_instances(cls) -> None:
+        """Clear all cached singleton instances.
+
+        .. deprecated:: 2609.0.0
+            Flows are no longer cached per host, so there is nothing
+            to reset.  This method is a no-op kept for backwards
+            compatibility and will be removed in a future release.
+            Drop the call; construct a new flow instead.
+
+        Examples
+        --------
+        .. code-block:: python
+
+            DeviceFlow.reset_instances()  # no-op, remove the call
+        """
+        warnings.warn(
+            "BaseFlow.reset_instances() is a no-op since 2609.0.0: flow "
+            "instances are no longer cached per host. It will be removed "
+            "in a future release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )  # pragma: no cover
 
 
 # -----------------------------------------------------------------------
