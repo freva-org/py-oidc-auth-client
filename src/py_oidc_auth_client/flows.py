@@ -51,13 +51,13 @@ from .backends import PyOIDCAuth
 from .exceptions import AuthError
 from .schema import DeviceCode, Token
 from .token_store import TokenStore
+from .types import TokenResponse
 from .utils import (
     Config,
     choose_token_strategy,
     clock,
     pprint,
 )
-from .types import TokenResponse
 
 logger = logging.getLogger(__name__)
 
