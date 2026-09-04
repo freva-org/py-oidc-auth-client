@@ -27,13 +27,17 @@ class TestNormaliseHost:
     """Host URL normalisation. Moved here from token_store."""
 
     def test_lowercase(self):
-        assert normalise_host("https://MyApp.Example.COM") == "https://myapp.example.com"
+        assert (
+            normalise_host("https://MyApp.Example.COM") == "https://myapp.example.com"
+        )
 
     def test_strips_trailing_slash(self):
         assert normalise_host("https://example.com/") == "https://example.com"
 
     def test_strips_path_and_query(self):
-        assert normalise_host("https://example.com/auth/v2?x=1") == "https://example.com"
+        assert (
+            normalise_host("https://example.com/auth/v2?x=1") == "https://example.com"
+        )
 
     def test_drops_default_https_port(self):
         assert normalise_host("https://example.com:443") == "https://example.com"
@@ -98,12 +102,15 @@ class TestDigest:
         assert a.digest == b.digest
 
     def test_scope_string_and_sequence_agree(self):
-        assert ident(scopes="openid profile").digest == ident(
-            scopes=["profile", "openid"]
-        ).digest
+        assert (
+            ident(scopes="openid profile").digest
+            == ident(scopes=["profile", "openid"]).digest
+        )
 
     def test_different_scopes_differ(self):
-        assert ident(scopes=("openid",)).digest != ident(scopes=("openid", "email")).digest
+        assert (
+            ident(scopes=("openid",)).digest != ident(scopes=("openid", "email")).digest
+        )
 
     def test_different_client_differs(self):
         assert ident(client_id="a").digest != ident(client_id="b").digest
@@ -115,9 +122,10 @@ class TestDigest:
         assert ident(audience="s3").digest != ident(audience="waterpark").digest
 
     def test_client_auth_method_participates(self):
-        assert ident(client_auth="secret_post").digest != ident(
-            client_auth="private_key_jwt"
-        ).digest
+        assert (
+            ident(client_auth="secret_post").digest
+            != ident(client_auth="private_key_jwt").digest
+        )
 
     def test_issuer_excluded_from_digest(self):
         """Issuer is resolved metadata, not configured input.
@@ -163,10 +171,14 @@ class TestGrantIsolation:
 class TestLabel:
     """Human readable summary used by the CLI listing."""
 
-    def test_includes_host_and_grant(self):
-        label = ident().label
-        assert label.startswith(HOST)
-        assert str(Grant.DEVICE_CODE) in label
+    def test_uses_the_short_grant_name_not_the_urn(self):
+        """The URN spelled grants are unreadable in a listing."""
+        label = ident(grant=Grant.TOKEN_EXCHANGE).label
+        assert "token_exchange" in label
+        assert "urn:" not in label
+
+    def test_labels_the_legacy_sentinel(self):
+        assert "unknown grant" in ident(grant=None).label
 
     def test_includes_scopes(self):
         assert "scopes=openid,profile" in ident(scopes=("profile", "openid")).label
@@ -370,9 +382,10 @@ class TestMatches:
         assert ident(scopes=()).matches(scopes=["openid"]) is False
 
     def test_scope_probe_is_normalised(self):
-        assert ident(scopes=("openid", "profile")).matches(
-            scopes=["profile openid"]
-        ) is True
+        assert (
+            ident(scopes=("openid", "profile")).matches(scopes=["profile openid"])
+            is True
+        )
 
     def test_all_constraints_must_hold(self):
         subject = ident(client_id="cli", scopes=("openid",), audience="s3")
