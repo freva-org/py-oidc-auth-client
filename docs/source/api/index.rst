@@ -12,3 +12,4 @@ API reference
    schema
    utils
    exceptions
+   types

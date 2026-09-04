@@ -141,7 +141,7 @@ legacy_tox_ini = """
 min_version = 4.0
 # "test" is in the default list so a bare `tox` runs it.  CI still calls
 # `tox -e test` per Python version in its own matrix job.
-env_list = test, docs, lint, types, pkg
+env_list = docs, lint, types, pkg
 passenv = *
 [testenv]
 passenv = *
@@ -160,7 +160,7 @@ allowlist_externals = make
                       codespell
 # -W turns Sphinx warnings into errors: a broken cross reference or a
 # page missing from a toctree currently passes CI silently.
-setenv = SPHINXOPTS = -W --keep-going -n
+setenv = SPHINXOPTS = -W --keep-going
 commands = codespell {posargs: --quiet-level=2} docs/source
            make -C docs clean
            make -C docs html

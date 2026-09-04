@@ -82,9 +82,7 @@ class Grant(str, Enum):
 
 #: Grants that mint a token on behalf of an end user, and are therefore
 #: interchangeable candidates when resolving a cached interactive login.
-INTERACTIVE_GRANTS = frozenset(
-    {Grant.AUTHORIZATION_CODE, Grant.DEVICE_CODE}
-)
+INTERACTIVE_GRANTS = frozenset({Grant.AUTHORIZATION_CODE, Grant.DEVICE_CODE})
 
 
 def normalise_host(host: str) -> str:
@@ -294,7 +292,10 @@ class AuthIdentity:
 
     @property
     def label(self) -> str:
-        """Human readable one line summary for ``--list`` output.
+        """Human readable one line summary, as shown by ``--list``.
+
+        Uses :attr:`Grant.display` rather than the wire value, which for
+        the URN spelled grants is far too long to read in a listing.
 
         Returns
         -------
@@ -313,7 +314,8 @@ class AuthIdentity:
         ... )
         True
         """
-        parts = [self.host, f"[{self.grant}]"]
+        grant = self.grant.display if self.grant else "unknown grant"
+        parts = [self.host, f"[{grant}]"]
         if self.client_id:
             parts.append(f"client={self.client_id}")
         if self.scopes:
@@ -392,7 +394,7 @@ class AuthIdentity:
             self,
             grant=Grant.TOKEN_EXCHANGE,
             audience=audience,
-            scopes=normalise_scopes(scopes) if scopes is not None else self.scopes,
+            scopes=(normalise_scopes(scopes) if scopes is not None else self.scopes),
             exchange=token[:_DIGEST_LENGTH],
         )
 
