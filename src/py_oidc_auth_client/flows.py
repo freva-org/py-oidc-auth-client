@@ -749,8 +749,19 @@ class CodeFlow(BaseFlow):
 
     @staticmethod
     def _start_local_server(port: int, event: Event) -> HTTPServer:
-        """Start a local HTTP server to capture the callback."""
+        """Start a local HTTP server to capture the callback.
+
+        The worker thread is attached to the returned server as
+        ``worker_thread``.  Callers must set *event* and join it before
+        calling ``server_close()``: closing the socket while the thread
+        is blocked in ``handle_request()`` raises ``ValueError: Invalid
+        file descriptor: -1`` in the thread, which surfaces as a
+        traceback on the user's terminal whenever a login is aborted.
+        """
         server = HTTPServer(("localhost", port), _OAuthCallbackHandler)
+        # Poll rather than block forever, so the loop below can notice
+        # that *event* was set and exit on its own.
+        server.timeout = 0.5
 
         def handle() -> None:
             logger.info("Waiting for browser callback on port %s ...", port)
@@ -762,6 +773,7 @@ class CodeFlow(BaseFlow):
                     event.set()
 
         thread = Thread(target=handle, daemon=True)
+        server.worker_thread = thread  # type: ignore[attr-defined]
         thread.start()
         return server
 
@@ -840,6 +852,12 @@ class CodeFlow(BaseFlow):
             )
             reason = str(error)
         finally:
+            # Stop the worker before the socket goes away, or it wakes up
+            # inside handle_request() on a closed file descriptor.
+            event.set()
+            worker = getattr(server, "worker_thread", None)
+            if worker is not None:
+                worker.join(timeout=2.0)
             if hasattr(server, "server_close"):
                 try:
                     server.server_close()
