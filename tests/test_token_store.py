@@ -70,7 +70,9 @@ class TestStoreEntry:
 
     def test_refresh_token_field_required_for_refresh_validity(self):
         """A refresh_expires with no refresh_token is not a credential."""
-        entry = self.make({"access_token": "a", "refresh_expires": time.time() + 3600})
+        entry = self.make(
+            {"access_token": "a", "refresh_expires": time.time() + 3600}
+        )
         assert entry.refresh_valid() is False
         assert entry.expired() is True
 
@@ -93,7 +95,9 @@ class TestStoreEntry:
             stored_at=1234.5,
             parent="0123456789abcdef",
         )
-        restored = StoreEntry.from_dict(json.loads(json.dumps(original.to_dict())))
+        restored = StoreEntry.from_dict(
+            json.loads(json.dumps(original.to_dict()))
+        )
         assert restored.digest == original.digest
         assert restored.parent == "0123456789abcdef"
         assert restored.stored_at == 1234.5
@@ -112,7 +116,10 @@ class TestCRUD:
         assert result["access_token"] == token["access_token"]
 
     def test_get_missing_returns_none(self, tmp_store: TokenStore):
-        assert tmp_store.get(make_identity(host="https://nope.example.com")) is None
+        assert (
+            tmp_store.get(make_identity(host="https://nope.example.com"))
+            is None
+        )
 
     def test_get_entry_exposes_identity(self, tmp_store: TokenStore):
         ident = make_identity(client_id="cli")
@@ -142,7 +149,10 @@ class TestCRUD:
         assert tmp_store.get(ident) is None
 
     def test_remove_missing_returns_zero(self, tmp_store: TokenStore):
-        assert tmp_store.remove(make_identity(host="https://nope.example.com")) == 0
+        assert (
+            tmp_store.remove(make_identity(host="https://nope.example.com"))
+            == 0
+        )
 
     def test_remove_by_digest(self, tmp_store: TokenStore):
         ident = make_identity()
@@ -150,9 +160,11 @@ class TestCRUD:
         assert tmp_store.remove(ident.digest) == 1
 
     def test_remove_by_host_takes_every_grant(self, tmp_store: TokenStore):
-        """"Log me out of this server" means all of it, not one grant."""
+        """ "Log me out of this server" means all of it, not one grant."""
         tmp_store.put(make_identity(grant=Grant.DEVICE_CODE), make_token())
-        tmp_store.put(make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token()
+        )
         tmp_store.put(make_identity(host=OTHER), make_token())
         assert tmp_store.remove(HOST) == 2
         assert tmp_store.hosts() == [OTHER]
@@ -163,7 +175,9 @@ class TestCRUD:
 
     def test_hosts_deduplicates_and_sorts(self, tmp_store: TokenStore):
         tmp_store.put(make_identity(grant=Grant.DEVICE_CODE), make_token())
-        tmp_store.put(make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token()
+        )
         tmp_store.put(make_identity(host=OTHER), make_token())
         assert tmp_store.hosts() == [HOST, OTHER]
 
@@ -193,7 +207,9 @@ class TestGrantIsolation:
         the last writer silently won.
         """
         device = make_identity(grant=Grant.DEVICE_CODE, scopes=("openid",))
-        code = make_identity(grant=Grant.AUTHORIZATION_CODE, scopes=("openid",))
+        code = make_identity(
+            grant=Grant.AUTHORIZATION_CODE, scopes=("openid",)
+        )
         service = make_identity(grant=Grant.CLIENT_CREDENTIALS)
 
         tmp_store.put(device, make_token(subject="device"))
@@ -214,7 +230,8 @@ class TestGrantIsolation:
         tmp_store.put(narrow, make_token(subject="narrow"))
         tmp_store.put(wide, make_token(subject="wide"))
         assert (
-            tmp_store.get(narrow)["access_token"] != tmp_store.get(wide)["access_token"]
+            tmp_store.get(narrow)["access_token"]
+            != tmp_store.get(wide)["access_token"]
         )
 
     def test_audiences_isolate(self, tmp_store: TokenStore):
@@ -222,18 +239,28 @@ class TestGrantIsolation:
         b = make_identity(audience="s3.dkrz.de")
         tmp_store.put(a, make_token(subject="waterpark"))
         tmp_store.put(b, make_token(subject="s3"))
-        assert tmp_store.get(a)["access_token"] != tmp_store.get(b)["access_token"]
+        assert (
+            tmp_store.get(a)["access_token"]
+            != tmp_store.get(b)["access_token"]
+        )
 
     def test_clients_isolate(self, tmp_store: TokenStore):
         a = make_identity(client_id="cli-a")
         b = make_identity(client_id="cli-b")
         tmp_store.put(a, make_token(subject="a"))
         tmp_store.put(b, make_token(subject="b"))
-        assert tmp_store.get(a)["access_token"] != tmp_store.get(b)["access_token"]
+        assert (
+            tmp_store.get(a)["access_token"]
+            != tmp_store.get(b)["access_token"]
+        )
 
     def test_scope_order_shares_one_entry(self, tmp_store: TokenStore):
-        tmp_store.put(make_identity(scopes=("openid", "profile")), make_token())
-        tmp_store.put(make_identity(scopes=("profile", "openid")), make_token())
+        tmp_store.put(
+            make_identity(scopes=("openid", "profile")), make_token()
+        )
+        tmp_store.put(
+            make_identity(scopes=("profile", "openid")), make_token()
+        )
         assert len(entry_files(tmp_store)) == 1
 
 
@@ -246,13 +273,17 @@ class TestFind:
         A caller willing to accept any interactive token has to ask
         before it picks a flow, not after.
         """
-        code = make_identity(grant=Grant.AUTHORIZATION_CODE, scopes=("openid",))
+        code = make_identity(
+            grant=Grant.AUTHORIZATION_CODE, scopes=("openid",)
+        )
         tmp_store.put(code, make_token())
         found = tmp_store.find(host=HOST, grants=INTERACTIVE_GRANTS)
         assert [e.identity.grant for e in found] == [Grant.AUTHORIZATION_CODE]
 
     def test_excludes_non_interactive_grants(self, tmp_store: TokenStore):
-        tmp_store.put(make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token()
+        )
         assert tmp_store.find(host=HOST, grants=INTERACTIVE_GRANTS) == []
 
     def test_filters_by_host(self, tmp_store: TokenStore):
@@ -267,7 +298,9 @@ class TestFind:
         assert len(tmp_store.find(host=HOST, client_id="a")) == 1
 
     def test_scope_superset_is_a_hit(self, tmp_store: TokenStore):
-        tmp_store.put(make_identity(scopes=("openid", "profile")), make_token())
+        tmp_store.put(
+            make_identity(scopes=("openid", "profile")), make_token()
+        )
         assert len(tmp_store.find(host=HOST, scopes=["openid"])) == 1
 
     def test_scope_subset_is_a_miss(self, tmp_store: TokenStore):
@@ -296,6 +329,19 @@ class TestFind:
         tmp_store.put(ident, make_refresh_only_token())
         assert len(tmp_store.find(host=HOST)) == 1
         assert tmp_store.find(host=HOST, usable_only=True)[0].usefulness() == 1
+
+    def test_usable_only_false_keeps_spent_entries(
+        self, tmp_store: TokenStore
+    ):
+        """Callers inspecting the cache may want the dead ones too."""
+        tmp_store.put(make_identity(), make_expired_token())
+        assert tmp_store.find(host=HOST, usable_only=False) == []
+        entry = StoreEntry(
+            identity=make_identity(host=OTHER), token=make_expired_token()
+        )
+        tmp_store._write(entry)
+        found = tmp_store.find(host=OTHER, usable_only=False)
+        assert [e.digest for e in found] == []
 
     def test_no_constraints_returns_everything(self, tmp_store: TokenStore):
         tmp_store.put(make_identity(), make_token())
@@ -361,7 +407,9 @@ class TestExchangeLinkage:
         tmp_store.put(grandchild, make_access_only_token(), parent=child)
         assert tmp_store.remove(parent) == 3
 
-    def test_child_outlives_nothing_when_parent_expires(self, tmp_store: TokenStore):
+    def test_child_outlives_nothing_when_parent_expires(
+        self, tmp_store: TokenStore
+    ):
         """An expired parent is pruned; the child is then an orphan.
 
         The child stays until its own expiry, which is correct: it is
@@ -396,9 +444,7 @@ class TestEviction:
         assert tmp_store.get_entry(identity) is None
         assert entry_files(tmp_store) == []
 
-    def test_get_does_not_touch_unrelated_entries(
-        self, tmp_store: TokenStore
-    ):
+    def test_get_does_not_touch_unrelated_entries(self, tmp_store: TokenStore):
         """Looking up one identity must not read the whole store.
 
         get() used to sweep every file before answering, which made a
@@ -410,15 +456,22 @@ class TestEviction:
         tmp_store.put(other, make_token())
         other_path = tmp_store.path / f"{other.digest}.json"
         with patch.object(
-            TokenStore, "_read_path", autospec=True, side_effect=TokenStore._read_path
+            TokenStore,
+            "_read_path",
+            autospec=True,
+            side_effect=TokenStore._read_path,
         ) as spy:
             tmp_store.get(wanted)
         read = {call.args[1] for call in spy.call_args_list}
         assert other_path not in read
 
     def test_prune_returns_count(self, tmp_store: TokenStore):
-        tmp_store.put(make_identity(grant=Grant.DEVICE_CODE), make_expired_token())
-        tmp_store.put(make_identity(grant=Grant.AUTHORIZATION_CODE), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.DEVICE_CODE), make_expired_token()
+        )
+        tmp_store.put(
+            make_identity(grant=Grant.AUTHORIZATION_CODE), make_token()
+        )
         assert tmp_store.prune() == 1
 
     def test_expired_excluded_from_entries(self, tmp_store: TokenStore):
@@ -443,7 +496,9 @@ class TestPersistence:
 
     def test_one_file_per_identity(self, tmp_store: TokenStore):
         tmp_store.put(make_identity(grant=Grant.DEVICE_CODE), make_token())
-        tmp_store.put(make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token()
+        )
         names = sorted(p.stem for p in entry_files(tmp_store))
         assert names == sorted(
             [
@@ -511,6 +566,18 @@ class TestPersistence:
             tmp_store.put(make_identity(), make_token())
         assert "Failed to write token store" in caplog.text
 
+    def test_unlink_failure_is_not_fatal(self, tmp_store: TokenStore, caplog):
+        """Removal is best effort; a locked file must not crash a read."""
+        tmp_store.put(make_identity(), make_expired_token())
+        with (
+            patch.object(Path, "unlink", side_effect=OSError("in use")),
+            caplog.at_level(
+                logging.DEBUG, logger="py_oidc_auth_client.token_store"
+            ),
+        ):
+            assert tmp_store.prune() == 1
+        assert "Failed to remove" in caplog.text
+
     def test_write_failure_cleans_up_temp_file(self, tmp_store: TokenStore):
         with patch("os.replace", side_effect=OSError("disk full")):
             tmp_store.put(make_identity(), make_token())
@@ -526,7 +593,9 @@ class TestPersistence:
         import multiprocessing as mp
 
         directory = tmp_path / "store"
-        with mp.Pool(8) as pool:
+        # "spawn", not the default fork: the test process is multi
+        # threaded and forking from it is unsafe (and warns on 3.12+).
+        with mp.get_context("spawn").Pool(8) as pool:
             pool.map(_write_one, [(directory, i) for i in range(32)])
         assert len(TokenStore(path=directory).entries()) == 32
 
@@ -536,7 +605,9 @@ def _write_one(args) -> None:
     directory, index = args
     store = TokenStore(path=directory)
     store.put(
-        make_identity(host=f"https://h{index}.example.com", client_id=f"c{index}"),
+        make_identity(
+            host=f"https://h{index}.example.com", client_id=f"c{index}"
+        ),
         make_token(),
     )
 
@@ -558,37 +629,53 @@ class TestLegacyMigration:
 
     def test_live_token_survives_upgrade(self, tmp_path: Path):
         """Nobody logs in again just because they upgraded."""
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         store = TokenStore(path=legacy)
         assert store.hosts() == [HOST]
 
     def test_legacy_file_removed_after_migration(self, tmp_path: Path):
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         TokenStore(path=legacy)
         assert not legacy.exists()
 
     def test_directory_derived_from_legacy_path(self, tmp_path: Path):
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         store = TokenStore(path=legacy)
         assert store.path == tmp_path / "tokens"
 
     def test_migrated_entry_carries_the_sentinel_grant(self, tmp_path: Path):
         """A v1 entry cannot say which interactive grant produced it."""
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         store = TokenStore(path=legacy)
         identity = store.entries()[0].identity
         assert identity.grant is None
         assert identity.backend == "py-oidc-auth"
 
     def test_sentinel_is_found_by_an_interactive_probe(self, tmp_path: Path):
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         store = TokenStore(path=legacy)
         assert len(store.find(host=HOST, grants=INTERACTIVE_GRANTS)) == 1
 
     def test_scopes_recovered_from_token(self, tmp_path: Path):
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         store = TokenStore(path=legacy)
-        assert store.entries()[0].identity.scopes == ("email", "openid", "profile")
+        assert store.entries()[0].identity.scopes == (
+            "email",
+            "openid",
+            "profile",
+        )
 
     def test_expired_legacy_entries_dropped(self, tmp_path: Path):
         legacy = self.write_legacy(
@@ -614,7 +701,9 @@ class TestLegacyMigration:
         assert not legacy.exists()
 
     def test_migration_is_idempotent(self, tmp_path: Path):
-        legacy = self.write_legacy(tmp_path / "tokens.json", **{HOST: make_token()})
+        legacy = self.write_legacy(
+            tmp_path / "tokens.json", **{HOST: make_token()}
+        )
         TokenStore(path=legacy)
         store = TokenStore(path=legacy)
         assert len(store.entries()) == 1
@@ -664,7 +753,9 @@ class TestDeprecatedHostAccess:
 
     def test_host_lookup_ignores_service_tokens(self, tmp_store: TokenStore):
         """A host string never resolves to a client credentials token."""
-        tmp_store.put(make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.CLIENT_CREDENTIALS), make_token()
+        )
         with pytest.warns(DeprecationWarning):
             assert tmp_store.get(HOST) is None
 

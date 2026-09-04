@@ -16,6 +16,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+import secrets
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
@@ -35,7 +36,7 @@ from py_oidc_auth_client.token_store import TokenStore
 # Token factories
 # ---------------------------------------------------------------------------
 
-JWT_SECRET = "test-secret-key"
+JWT_SECRET = secrets.token_urlsafe()
 
 
 def make_raw_token_response(
