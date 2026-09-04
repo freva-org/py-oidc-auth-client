@@ -160,6 +160,53 @@ class TestGrantIsolation:
         assert str(Grant.CLIENT_CREDENTIALS) == "client_credentials"
 
 
+class TestLabel:
+    """Human readable summary used by the CLI listing."""
+
+    def test_includes_host_and_grant(self):
+        label = ident().label
+        assert label.startswith(HOST)
+        assert str(Grant.DEVICE_CODE) in label
+
+    def test_includes_scopes(self):
+        assert "scopes=openid,profile" in ident(scopes=("profile", "openid")).label
+
+    def test_includes_client_and_audience(self):
+        label = ident(client_id="cli", audience="s3.dkrz.de").label
+        assert "client=cli" in label
+        assert "audience=s3.dkrz.de" in label
+
+    def test_omits_absent_fields(self):
+        label = ident().label
+        assert "client=" not in label
+        assert "scopes=" not in label
+        assert "audience=" not in label
+
+    def test_ends_with_digest(self):
+        identity = ident()
+        assert identity.label.endswith(f"({identity.digest})")
+
+
+class TestGrantDisplay:
+    """Short names for the wire level grant values."""
+
+    @pytest.mark.parametrize(
+        "grant,expected",
+        [
+            (Grant.AUTHORIZATION_CODE, "authorization_code"),
+            (Grant.REFRESH_TOKEN, "refresh_token"),
+            (Grant.CLIENT_CREDENTIALS, "client_credentials"),
+            (Grant.DEVICE_CODE, "device_code"),
+            (Grant.TOKEN_EXCHANGE, "token_exchange"),
+        ],
+    )
+    def test_display(self, grant: Grant, expected: str):
+        assert grant.display == expected
+
+    def test_display_never_contains_the_urn_prefix(self):
+        assert all("urn:" not in grant.display for grant in Grant)
+
+
 class TestForExchange:
     """Derived identities for RFC 8693 results."""
 

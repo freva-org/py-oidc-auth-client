@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
-from typing import Optional
 from unittest.mock import patch
 
 import pytest
 
-from py_oidc_auth_client.identity import INTERACTIVE_GRANTS, AuthIdentity, Grant
+from py_oidc_auth_client.identity import INTERACTIVE_GRANTS, Grant
 from py_oidc_auth_client.token_store import StoreEntry, TokenStore
 
 from .conftest import (
@@ -391,6 +389,33 @@ class TestEviction:
         tmp_store.prune()
         assert entry_files(tmp_store) == []
 
+    def test_reading_an_expired_entry_evicts_it(self, tmp_store: TokenStore):
+        """A read cleans up after itself, so prune is only a sweep."""
+        identity = make_identity()
+        tmp_store.put(identity, make_expired_token())
+        assert tmp_store.get_entry(identity) is None
+        assert entry_files(tmp_store) == []
+
+    def test_get_does_not_touch_unrelated_entries(
+        self, tmp_store: TokenStore
+    ):
+        """Looking up one identity must not read the whole store.
+
+        get() used to sweep every file before answering, which made a
+        single lookup O(number of cached tokens).
+        """
+        wanted = make_identity(grant=Grant.DEVICE_CODE)
+        other = make_identity(host=OTHER)
+        tmp_store.put(wanted, make_token())
+        tmp_store.put(other, make_token())
+        other_path = tmp_store.path / f"{other.digest}.json"
+        with patch.object(
+            TokenStore, "_read_path", autospec=True, side_effect=TokenStore._read_path
+        ) as spy:
+            tmp_store.get(wanted)
+        read = {call.args[1] for call in spy.call_args_list}
+        assert other_path not in read
+
     def test_prune_returns_count(self, tmp_store: TokenStore):
         tmp_store.put(make_identity(grant=Grant.DEVICE_CODE), make_expired_token())
         tmp_store.put(make_identity(grant=Grant.AUTHORIZATION_CODE), make_token())
@@ -451,6 +476,20 @@ class TestPersistence:
         (tmp_store.path / "deadbeefdeadbeef.json").write_text("NOT JSON")
         assert len(tmp_store.entries()) == 1
         assert not (tmp_store.path / "deadbeefdeadbeef.json").exists()
+
+    def test_unreadable_entry_is_left_alone(self, tmp_store: TokenStore):
+        """A permissions or I/O error is not the entry's fault.
+
+        Deleting on a transient read failure would turn a temporary
+        problem into permanent token loss.
+        """
+        identity = make_identity()
+        tmp_store.put(identity, make_token())
+        path = tmp_store.path / f"{identity.digest}.json"
+        with patch.object(Path, "read_text", side_effect=OSError("EIO")):
+            assert tmp_store.entries() == []
+        assert path.exists()
+        assert tmp_store.get(identity) is not None
 
     def test_malformed_entry_is_discarded(self, tmp_store: TokenStore):
         (tmp_store.path / "deadbeefdeadbeef.json").write_text('{"token": {}}')
@@ -582,6 +621,21 @@ class TestLegacyMigration:
 
     def test_no_legacy_file_is_a_no_op(self, tmp_path: Path):
         assert TokenStore(path=tmp_path / "tokens.json").entries() == []
+
+    def test_versioned_file_is_not_treated_as_legacy(self, tmp_path: Path):
+        """A file already carrying a version is not a v1 store."""
+        legacy = tmp_path / "tokens.json"
+        legacy.write_text(json.dumps({"version": 2, "entries": {}}))
+        store = TokenStore(path=legacy)
+        assert store.entries() == []
+        assert not legacy.exists()
+
+    def test_non_object_legacy_file_is_discarded(self, tmp_path: Path):
+        legacy = tmp_path / "tokens.json"
+        legacy.write_text(json.dumps(["not", "a", "store"]))
+        store = TokenStore(path=legacy)
+        assert store.entries() == []
+        assert not legacy.exists()
 
 
 class TestDeprecatedHostAccess:

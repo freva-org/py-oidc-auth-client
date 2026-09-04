@@ -80,10 +80,8 @@ def _resolve_target(store: TokenStore, target: str) -> Optional[str]:
     on a unique match, ``target`` unchanged when it is not digest like
     (a host URL), and ``None`` when the prefix is ambiguous.
     """
-    if (
-        "/" in target
-        or not target
-        or not all(char in "0123456789abcdef" for char in target)
+    if "/" in target or not target or not all(
+        char in "0123456789abcdef" for char in target
     ):
         return target
     matches = [e.digest for e in store.entries() if e.digest.startswith(target)]
@@ -326,4 +324,6 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(prog="python -m py_oidc_auth_client"))  # pragma: no cover
+    raise SystemExit(
+        main(prog="python -m py_oidc_auth_client")
+    )  # pragma: no cover

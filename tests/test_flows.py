@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from types import SimpleNamespace
+from typing import List
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -29,6 +30,26 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _free_ports(count: int = 3) -> List[int]:
+    """Reserve *count* distinct ephemeral ports.
+
+    Tests that start a real callback server must not use the default
+    ``redirect_ports`` range.  Those ports go into ``TIME_WAIT`` when a
+    server closes, so a second run of the suite within the timeout finds
+    them all busy and the test fails for reasons unrelated to the code.
+    """
+    sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(count)]
+    try:
+        ports = []
+        for sock in sockets:
+            sock.bind(("127.0.0.1", 0))
+            ports.append(int(sock.getsockname()[1]))
+        return ports
+    finally:
+        for sock in sockets:
+            sock.close()
 
 
 # ======================================================================
@@ -443,12 +464,16 @@ class TestCodeFlowFindFreePort:
     """Port selection from config list."""
 
     def test_finds_a_free_port(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com", store=tmp_store, redirect_ports=_free_ports()
+        )
         port = flow._find_free_port()
         assert port in flow.provider.config.redirect_ports
 
     def test_all_busy_raises(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com", store=tmp_store, redirect_ports=_free_ports()
+        )
         sockets = []
         try:
             for p in flow.provider.config.redirect_ports:
@@ -469,7 +494,9 @@ class TestCodeFlowCallbackServer:
     """Local HTTP callback server for capturing auth codes."""
 
     def test_callback_captures_code(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com", store=tmp_store, redirect_ports=_free_ports()
+        )
         port = flow._find_free_port()
         event = threading.Event()
         server = CodeFlow._start_local_server(port, event)
@@ -486,7 +513,9 @@ class TestCodeFlowCallbackServer:
             server.server_close()
 
     def test_callback_captures_authorization_error(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com", store=tmp_store, redirect_ports=_free_ports()
+        )
         port = flow._find_free_port()
         event = threading.Event()
         server = CodeFlow._start_local_server(port, event)
@@ -511,7 +540,9 @@ class TestCodeFlowCallbackServer:
             server.server_close()
 
     def test_callback_without_code_returns_400(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com", store=tmp_store, redirect_ports=_free_ports()
+        )
         port = flow._find_free_port()
         event = threading.Event()
         server = CodeFlow._start_local_server(port, event)

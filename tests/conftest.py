@@ -26,8 +26,8 @@ import uvicorn
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
-from py_oidc_auth_client.identity import AuthIdentity, Grant
 from py_oidc_auth_client.flows import BaseFlow
+from py_oidc_auth_client.identity import AuthIdentity, Grant
 from py_oidc_auth_client.schema import Token
 from py_oidc_auth_client.token_store import TokenStore
 

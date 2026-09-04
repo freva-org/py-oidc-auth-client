@@ -28,7 +28,9 @@ Removing a parent cascades to its children, and an exchanged token that
 expires without a refresh token of its own is re-minted by walking that
 link back to the parent.
 
-Stale entries are pruned lazily on every read.
+A read evicts its own entry when it is expired or malformed, so
+stale state never accumulates on the path anyone actually uses.
+:meth:`TokenStore.prune` sweeps the rest.
 
 Legacy host keyed stores (``token-store.json``, no ``version`` key) are
 migrated in place on first use.  A legacy entry cannot say which
@@ -277,7 +279,8 @@ class TokenStore:
     def get(self, identity: Union[AuthIdentity, str]) -> Optional[Token]:
         """Look up a cached token.
 
-        Triggers a cleanup pass that removes expired entries.
+        Reads only this identity's entry, and deletes it if it has
+        expired.  Sweeping the rest of the store is :meth:`prune`'s job.
 
         Parameters
         ----------
@@ -295,7 +298,9 @@ class TokenStore:
         entry = self.get_entry(identity)
         return entry.token if entry else None
 
-    def get_entry(self, identity: Union[AuthIdentity, str]) -> Optional[StoreEntry]:
+    def get_entry(
+        self, identity: Union[AuthIdentity, str]
+    ) -> Optional[StoreEntry]:
         """Look up a cached entry, with its identity and parent link.
 
         Parameters
@@ -308,13 +313,14 @@ class TokenStore:
         StoreEntry or None
             The cached entry when present and usable, else ``None``.
         """
-        self.prune()
+        resolved: Optional[AuthIdentity]
         if isinstance(identity, str):
-            legacy_id = self._legacy_lookup(identity, "get")
-            if legacy_id is None:
-                return None
-            identity = legacy_id
-        return self._read(identity.digest)
+            resolved = self._legacy_lookup(identity, "get")
+        else:
+            resolved = identity
+        if resolved is None:
+            return None
+        return self._read(resolved.digest)
 
     def put(
         self,
@@ -344,7 +350,9 @@ class TokenStore:
         """
         if isinstance(identity, str):
             identity = self._legacy_identity(identity, "put")
-        parent_digest = parent.digest if isinstance(parent, AuthIdentity) else parent
+        parent_digest = (
+            parent.digest if isinstance(parent, AuthIdentity) else parent
+        )
         entry = StoreEntry(
             identity=identity,
             token=token,
@@ -449,14 +457,13 @@ class TokenStore:
     def entries(self) -> List[StoreEntry]:
         """Return every live entry in the store.
 
-        Expired entries are pruned first.
+        Expired and malformed entries are evicted as they are read.
 
         Returns
         -------
         list of StoreEntry
             All cached entries, in unspecified order.
         """
-        self.prune()
         found = []
         for path in self._dir.glob("*.json"):
             if path.name == "meta.json":
@@ -500,22 +507,22 @@ class TokenStore:
                 self._unlink(path)
 
     def prune(self) -> int:
-        """Delete expired entries from disk.
+        """Sweep the store, deleting expired and malformed entries.
+
+        Reads evict their own entry as they go, so this is only needed
+        to reclaim space taken by identities nobody is asking about.
 
         Returns
         -------
         int
             Number of entries removed.
         """
-        now = time.time()
         removed = 0
         for path in self._dir.glob("*.json"):
             if path.name == "meta.json":
                 continue
-            entry = self._read_path(path, prune=False)
-            if entry is None or entry.expired(now):
-                logger.debug("Evicting expired token %s", path.stem)
-                self._unlink(path)
+            if self._read_path(path) is None:
+                logger.debug("Evicted unusable token entry %s", path.stem)
                 removed += 1
         return removed
 
@@ -543,8 +550,13 @@ class TokenStore:
         """Read one entry by digest, or ``None`` when absent or dead."""
         return self._read_path(self._entry_path(digest))
 
-    def _read_path(self, path: Path, prune: bool = True) -> Optional[StoreEntry]:
-        """Read and parse one entry file.
+    def _read_path(self, path: Path) -> Optional[StoreEntry]:
+        """Read and parse one entry file, evicting it if it is unusable.
+
+        Returns ``None`` for an absent, unreadable, malformed or expired
+        entry, deleting the file in the latter two cases.  This is the
+        single place an entry is judged, so a read never has to sweep
+        the rest of the store to know whether its own entry is good.
 
         A malformed file is treated as absent rather than fatal: the
         cache is disposable, and a corrupt entry should cost a fresh
@@ -552,7 +564,17 @@ class TokenStore:
         """
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+        except FileNotFoundError:
+            return None
+        except json.JSONDecodeError as exc:
+            # Corrupt beyond repair, so evict it rather than re-reading
+            # it on every listing for the rest of time.
+            logger.warning("Discarding corrupt token entry %s: %s", path.name, exc)
+            self._unlink(path)
+            return None
+        except OSError as exc:
+            # Transient: a permissions problem or a bad disk is not the
+            # entry's fault, so leave the file alone.
             logger.debug("Unreadable token entry %s: %s", path.name, exc)
             return None
         try:
@@ -561,7 +583,7 @@ class TokenStore:
             logger.warning("Discarding malformed token entry %s: %s", path.name, exc)
             self._unlink(path)
             return None
-        if prune and entry.expired():
+        if entry.expired():
             self._unlink(path)
             return None
         return entry
@@ -684,6 +706,8 @@ class TokenStore:
                 continue
             self._write(entry)
             migrated += 1
-        logger.info("Migrated %d token(s) from %s to %s", migrated, legacy, self._dir)
+        logger.info(
+            "Migrated %d token(s) from %s to %s", migrated, legacy, self._dir
+        )
         self._unlink(legacy)
         return migrated

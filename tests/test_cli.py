@@ -3,23 +3,80 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import time
 from unittest.mock import patch
 
 import pytest
 
-from py_oidc_auth_client.__main__ import main
+from py_oidc_auth_client.__main__ import _describe, _humanise, _status, main
 from py_oidc_auth_client.exceptions import AuthError
-from py_oidc_auth_client.token_store import TokenStore
-
 from py_oidc_auth_client.identity import Grant
+from py_oidc_auth_client.token_store import StoreEntry, TokenStore
 
 from .conftest import (
     make_access_only_token,
+    make_expired_token,
     make_identity,
     make_refresh_only_token,
     make_token,
 )
+
+
+class TestListingFormatters:
+    """Column helpers behind --list.
+
+    Unit tested directly: some branches are defensive and cannot be
+    reached through the store, which evicts what they describe.
+    """
+
+    @pytest.mark.parametrize(
+        "seconds,expected",
+        [
+            (0, "0s"),
+            (-5, "0s"),
+            (45, "45s"),
+            (59, "59s"),
+            (60, "1m"),
+            (3599, "59m"),
+            (3600, "1h00m"),
+            (7860, "2h11m"),
+            (86399, "23h59m"),
+            (86400, "1d"),
+            (200000, "2d"),
+        ],
+    )
+    def test_humanise(self, seconds: int, expected: str):
+        assert _humanise(seconds) == expected
+
+    def test_status_live_access_token(self):
+        entry = StoreEntry(identity=make_identity(), token=make_token())
+        assert _status(entry, time.time()).startswith("expires in")
+
+    def test_status_refresh_only(self):
+        entry = StoreEntry(
+            identity=make_identity(), token=make_refresh_only_token()
+        )
+        assert _status(entry, time.time()).startswith("refresh only")
+
+    def test_status_expired(self):
+        """Defensive: the store evicts these before a listing sees them."""
+        entry = StoreEntry(
+            identity=make_identity(), token=make_expired_token()
+        )
+        assert _status(entry, time.time()) == "expired"
+
+    def test_describe_includes_scopes(self):
+        entry = StoreEntry(
+            identity=make_identity(scopes=("openid", "profile")),
+            token=make_token(),
+        )
+        assert "scopes=openid,profile" in _describe(entry, time.time())[1]
+
+    def test_describe_marks_the_legacy_sentinel(self):
+        entry = StoreEntry(identity=make_identity(grant=None), token=make_token())
+        columns = _describe(entry, time.time())
+        assert columns[0] == "unknown grant"
+        assert "migrated" in columns[1]
 
 
 class TestCLIStoreManagement:
@@ -62,7 +119,10 @@ class TestCLIStoreManagement:
 
     def test_list_names_the_grant(self, tmp_store: TokenStore, capsys):
         """Users need to see which principal each token belongs to."""
-        tmp_store.put(make_identity(grant=Grant.DEVICE_CODE), make_token())
+        tmp_store.put(
+            make_identity(grant=Grant.DEVICE_CODE, scopes=("openid", "profile")),
+            make_token(),
+        )
         tmp_store.put(
             make_identity(grant=Grant.CLIENT_CREDENTIALS, client_id="svc"),
             make_access_only_token(),
@@ -73,6 +133,7 @@ class TestCLIStoreManagement:
         assert "device_code" in out
         assert "client_credentials" in out
         assert "client=svc" in out
+        assert "scopes=openid,profile" in out
 
     def test_list_shows_one_host_header_per_host(
         self, tmp_store: TokenStore, capsys
@@ -191,6 +252,15 @@ class TestCLIStoreManagement:
     def test_remove_missing(self, tmp_store: TokenStore, capsys):
         assert self.run(tmp_store, ["--remove", "https://nope.example.com"]) == 0
         assert "No cached token" in capsys.readouterr().out
+
+    def test_remove_unmatched_digest_is_not_an_error(
+        self, tmp_store: TokenStore, capsys
+    ):
+        """A digest-shaped argument that matches nothing just reports so."""
+        tmp_store.put(make_identity(), make_token())
+        assert self.run(tmp_store, ["--remove", "beefbeef"]) == 0
+        assert "No cached token" in capsys.readouterr().out
+        assert len(tmp_store.entries()) == 1
 
 
 class TestCLIOptionPassthrough:
