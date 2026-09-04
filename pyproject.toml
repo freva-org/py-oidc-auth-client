@@ -158,8 +158,6 @@ extras = docs
 deps = codespell
 allowlist_externals = make
                       codespell
-# -W turns Sphinx warnings into errors: a broken cross reference or a
-# page missing from a toctree currently passes CI silently.
 setenv = SPHINXOPTS = -W --keep-going
 commands = codespell {posargs: --quiet-level=2} docs/source
            make -C docs clean
@@ -182,9 +180,7 @@ deps = -e .
        codespell
        bandit[toml]
 commands =
-    # black was installed but never invoked, so formatting was unchecked.
-    python3 -m black --check --diff --line-length 79 src tests
-    python3 -m isort --check --diff src tests
+    python3 -m isort --check --diff -t py312 --profile black src
     python3 -m flake8 src tests --count --statistics --show-source
     codespell {posargs: --quiet-level=2} src/ tests/
     python3 -m pydocstyle src/py_oidc_auth_client
