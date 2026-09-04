@@ -298,9 +298,7 @@ class TokenStore:
         entry = self.get_entry(identity)
         return entry.token if entry else None
 
-    def get_entry(
-        self, identity: Union[AuthIdentity, str]
-    ) -> Optional[StoreEntry]:
+    def get_entry(self, identity: Union[AuthIdentity, str]) -> Optional[StoreEntry]:
         """Look up a cached entry, with its identity and parent link.
 
         Parameters
@@ -350,9 +348,7 @@ class TokenStore:
         """
         if isinstance(identity, str):
             identity = self._legacy_identity(identity, "put")
-        parent_digest = (
-            parent.digest if isinstance(parent, AuthIdentity) else parent
-        )
+        parent_digest = parent.digest if isinstance(parent, AuthIdentity) else parent
         entry = StoreEntry(
             identity=identity,
             token=token,
@@ -706,8 +702,6 @@ class TokenStore:
                 continue
             self._write(entry)
             migrated += 1
-        logger.info(
-            "Migrated %d token(s) from %s to %s", migrated, legacy, self._dir
-        )
+        logger.info("Migrated %d token(s) from %s to %s", migrated, legacy, self._dir)
         self._unlink(legacy)
         return migrated
