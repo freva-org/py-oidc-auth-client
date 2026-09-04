@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-
 from py_oidc_auth_client.utils import (
     Config,
     build_url,

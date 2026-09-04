@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import secrets
 import socket
 import threading
 import time
 from types import SimpleNamespace
+from typing import List
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -25,10 +27,43 @@ from .conftest import (
 )
 
 
+def _shutdown(server, event: threading.Event) -> None:
+    """Stop a callback server the way _run_code_flow does.
+
+    Closing the socket while the worker is blocked in handle_request()
+    raises in the thread, which pytest reports as a teardown error.
+    """
+    event.set()
+    worker = getattr(server, "worker_thread", None)
+    if worker is not None:
+        worker.join(timeout=2.0)
+    server.server_close()
+
+
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _free_ports(count: int = 3) -> List[int]:
+    """Reserve *count* distinct ephemeral ports.
+
+    Tests that start a real callback server must not use the default
+    ``redirect_ports`` range.  Those ports go into ``TIME_WAIT`` when a
+    server closes, so a second run of the suite within the timeout finds
+    them all busy and the test fails for reasons unrelated to the code.
+    """
+    sockets = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(count)]
+    try:
+        ports = []
+        for sock in sockets:
+            sock.bind(("127.0.0.1", 0))
+            ports.append(int(sock.getsockname()[1]))
+        return ports
+    finally:
+        for sock in sockets:
+            sock.close()
 
 
 # ======================================================================
@@ -57,7 +92,7 @@ class TestBaseFlowConstruction:
         assert a.store is b.store
         # Different flow subclasses have distinct TokenStore objects, but the
         # default stores point at the same persistent cache file.
-        assert a.store._path == code.store._path
+        assert a.store.path == code.store.path
 
 
 class TestBaseFlowTokenCache:
@@ -103,7 +138,7 @@ class TestBaseFlowBuildToken:
         flow = DeviceFlow("https://a.example.com", store=tmp_store)
         now = int(time.time())
         raw = {
-            "access_token": jwt.encode({"sub": "u"}, "s"),
+            "access_token": jwt.encode({"sub": "u"}, secrets.token_urlsafe()),
             "expires_in": 600,
             "refresh_expires_in": 7200,
             "refresh_token": "rt",
@@ -414,7 +449,15 @@ class TestCodeFlowWaitForPort:
 
     @pytest.mark.asyncio
     async def test_socket_oserror_is_retried(self):
-        """Socket errors while probing are ignored until timeout."""
+        """Socket errors while probing are ignored until timeout.
+
+        Deliberately does not patch ``time.time``.  ``flows.time`` is the
+        global time module, so patching it with a finite ``side_effect``
+        list is process wide: the logging module and the background
+        uvicorn server both call ``time.time()``, steal values from the
+        list, and the test dies with StopIteration at random.  A short
+        real timeout is deterministic and needs no patch.
+        """
 
         class BrokenSocket:
             def __enter__(self):
@@ -426,29 +469,37 @@ class TestCodeFlowWaitForPort:
             def settimeout(self, timeout):
                 pass
 
+            probes = 0
+
             def connect_ex(self, address):
+                type(self).probes += 1
                 raise OSError("network unavailable")
 
-        with (
-            patch(
-                "py_oidc_auth_client.flows.socket.socket", return_value=BrokenSocket()
-            ),
-            patch("py_oidc_auth_client.flows.time.time", side_effect=[0.0, 0.0, 2.0]),
-        ):
+        broken = BrokenSocket()
+        with patch("py_oidc_auth_client.flows.socket.socket", return_value=broken):
             with pytest.raises(TimeoutError, match="did not open"):
-                await CodeFlow._wait_for_port("127.0.0.1", 12345, timeout=1.0)
+                await CodeFlow._wait_for_port("127.0.0.1", 12345, timeout=0.2)
+        assert broken.probes > 1, "OSError should be retried, not fatal"
 
 
 class TestCodeFlowFindFreePort:
     """Port selection from config list."""
 
     def test_finds_a_free_port(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com",
+            store=tmp_store,
+            redirect_ports=_free_ports(),
+        )
         port = flow._find_free_port()
         assert port in flow.provider.config.redirect_ports
 
     def test_all_busy_raises(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com",
+            store=tmp_store,
+            redirect_ports=_free_ports(),
+        )
         sockets = []
         try:
             for p in flow.provider.config.redirect_ports:
@@ -469,7 +520,11 @@ class TestCodeFlowCallbackServer:
     """Local HTTP callback server for capturing auth codes."""
 
     def test_callback_captures_code(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com",
+            store=tmp_store,
+            redirect_ports=_free_ports(),
+        )
         port = flow._find_free_port()
         event = threading.Event()
         server = CodeFlow._start_local_server(port, event)
@@ -483,10 +538,14 @@ class TestCodeFlowCallbackServer:
             assert getattr(server, "auth_code", None) == "TEST-CODE-123"
             assert getattr(server, "auth_state", None) == "opaque|verifier"
         finally:
-            server.server_close()
+            _shutdown(server, event)
 
     def test_callback_captures_authorization_error(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com",
+            store=tmp_store,
+            redirect_ports=_free_ports(),
+        )
         port = flow._find_free_port()
         event = threading.Event()
         server = CodeFlow._start_local_server(port, event)
@@ -508,10 +567,14 @@ class TestCodeFlowCallbackServer:
             )
             assert getattr(server, "auth_state", None) == "opaque-state"
         finally:
-            server.server_close()
+            _shutdown(server, event)
 
     def test_callback_without_code_returns_400(self, tmp_store: TokenStore):
-        flow = CodeFlow("https://a.example.com", store=tmp_store)
+        flow = CodeFlow(
+            "https://a.example.com",
+            store=tmp_store,
+            redirect_ports=_free_ports(),
+        )
         port = flow._find_free_port()
         event = threading.Event()
         server = CodeFlow._start_local_server(port, event)
@@ -530,7 +593,7 @@ class TestCodeFlowCallbackServer:
             )
             assert event.wait(timeout=2)
         finally:
-            server.server_close()
+            _shutdown(server, event)
 
 
 class TestCodeFlowRunCodeFlow:
@@ -677,7 +740,9 @@ class TestCodeFlowRunCodeFlow:
         """All configured ports busy -> OSError propagates."""
         flow = CodeFlow(test_server, store=tmp_store, timeout=5)
         with patch.object(
-            flow, "_find_free_port", side_effect=OSError("No free ports available")
+            flow,
+            "_find_free_port",
+            side_effect=OSError("No free ports available"),
         ):
             with pytest.raises(OSError, match="No free ports"):
                 await flow._run_code_flow()

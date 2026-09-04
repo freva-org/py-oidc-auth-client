@@ -11,7 +11,7 @@ Store a refresh token on disk and point to it via a dedicated :class:`py_oidc_au
 The high level helper reads and updates this store across runs.
 
 You usually do not need a different ``TokenStore`` for every host. ``TokenStore`` separates
-tokens by host internally, so one store file per application or environment is often enough.
+tokens by identity internally, so one store per application or environment is often enough.
 
 .. code-block:: python
 
@@ -20,7 +20,7 @@ tokens by host internally, so one store file per application or environment is o
    token = authenticate(
        host="https://auth.example.org",
        app_name="my-app",
-       store=TokenStore(path="~/.cache/py-oidc-auth-client/my-app.json"),
+       store=TokenStore(path="~/.cache/py-oidc-auth-client/my-app"),
    )
 
 Why ``TokenStore`` is important here

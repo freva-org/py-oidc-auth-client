@@ -37,16 +37,25 @@ Non interactive / batch mode
     # On the cluster or in CI: reuses cached token automatically
     token = authenticate(host="https://myapp.example.com")
 
-Multiple servers
-~~~~~~~~~~~~~~~~
+Multiple servers and multiple identities
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Tokens are cached per host, so authenticating to different servers
-does not overwrite previous tokens:
+Tokens are cached per :class:`~identity.AuthIdentity`, which covers the
+host together with everything else that made the token unique: the
+grant that produced it, the client it was issued to, the scopes granted
+and the audience it was minted for.  Authenticating to a different
+server, or as a different principal on the same server, never
+overwrites an existing token.
 
 .. code-block:: python
 
     token_a = authenticate(host="https://server-a.example.com")
     token_b = authenticate(host="https://server-b.example.com")
+
+You do not build identities yourself.  Each flow derives its own from
+the parameters you pass it, and exposes it read only as
+``flow.identity``.  Identities come back out of the store when you
+inspect the cache.
 
 For finer control over individual flows, see :class:`~flows.DeviceFlow`
 and :class:`~flows.CodeFlow`.
@@ -59,7 +68,9 @@ CLI usage
     python -m py_oidc_auth_client https://myapp.example.com
     python -m py_oidc_auth_client https://myapp.example.com --timeout 120
     python -m py_oidc_auth_client --list
+    python -m py_oidc_auth_client --list --verbose
     python -m py_oidc_auth_client --clear
+    python -m py_oidc_auth_client --remove https://myapp.example.com
 """
 
 from __future__ import annotations
@@ -69,8 +80,9 @@ from typing import List, Optional
 
 from .exceptions import AuthError
 from .flows import BaseFlow, CodeFlow, DeviceFlow
+from .identity import AuthIdentity, Grant
 from .schema import DeviceCode, Token
-from .token_store import TokenStore
+from .token_store import StoreEntry, TokenStore
 from .utils import Config
 
 __version__ = "2609.0.0"
@@ -93,16 +105,16 @@ def authenticate(
     This is the primary entry point for the library.  It handles the
     full authentication lifecycle:
 
-    1. Check the token store for a cached token for this host.
+    1. Check the token store for a cached token for this identity.
     2. If the access token is still valid, return it immediately.
     3. If only the refresh token is valid, perform a token refresh.
     4. Otherwise, start an interactive login.  The device flow is
        attempted first; if the server does not support it, the
        authorization code flow (local browser) is used as a fallback.
 
-    Tokens are stored per host in a shared JSON file, so
-    authenticating to multiple servers does not overwrite previous
-    tokens.
+    Tokens are cached per :class:`~identity.AuthIdentity`, one file per
+    entry, so authenticating to multiple servers or as multiple
+    principals does not overwrite previous tokens.
 
     Parameters
     ----------
@@ -122,7 +134,7 @@ def authenticate(
     store : TokenStore or None
         Custom :class:`TokenStore` for token persistence.  When
         ``None`` a default store is created in the platform cache
-        directory (e.g. ``~/.cache/<app_name>/token-store.json``).
+        directory (e.g. ``~/.cache/<app_name>/tokens/``).
     app_name : str
         Application name for the cache directory.  Only used when
         *store* is ``None``.  Defaults to ``"py-oidc-auth"``.
@@ -186,7 +198,7 @@ def authenticate(
             host="https://myapp.example.com",
             app_name="my-project",
         )
-        # Tokens stored in ~/.cache/my-project/token-store.json
+        # Tokens stored in ~/.cache/my-project/tokens/
 
     Custom token store:
 
@@ -194,7 +206,7 @@ def authenticate(
 
         from py_oidc_auth_client import TokenStore, authenticate
 
-        store = TokenStore("~/.config/myapp/tokens.json")
+        store = TokenStore("~/.config/myapp/tokens")
         token = authenticate(
             host="https://myapp.example.com",
             store=store,
@@ -312,11 +324,14 @@ async def authenticate_async(
 
 __all__ = [
     "AuthError",
+    "AuthIdentity",
     "BaseFlow",
     "CodeFlow",
     "Config",
     "DeviceCode",
     "DeviceFlow",
+    "Grant",
+    "StoreEntry",
     "Token",
     "TokenStore",
     "authenticate",
