@@ -55,6 +55,8 @@ tests = ["pytest",
          "uvicorn",
          "fastapi",
          "python-multipart",
+         "pytest-timeout",
+         "pytest-xdist",
          "PyJWT[crypto]",
          ]
 docs = ["sphinx-execute-code-python3",
@@ -67,8 +69,8 @@ docs = ["sphinx-execute-code-python3",
         "sphinx-design",
         "pydata-sphinx-theme"
         ]
-[package-data]
-freva_auth = ["py.typed"]
+# flit ships every file inside the package directory, so py.typed needs
+# no declaration here.  It does need to exist: see src/py_oidc_auth_client/py.typed.
 
 
 
@@ -77,14 +79,19 @@ log_cli = false
 log_cli_level = "ERROR"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+addopts = "--strict-markers --strict-config"
+# A blanket "ignore::UserWarning" would hide the warnings this library
+# raises for unsupported grant parameters, so filter by origin instead.
 filterwarnings = [
-    "ignore::UserWarning",
+    "error::UserWarning",
     "ignore::DeprecationWarning:websockets",
-    "ignore::DeprecationWarning:uvicorn"
+    "ignore::DeprecationWarning:uvicorn",
+    "ignore::DeprecationWarning:starlette",
 ]
+timeout = 60
 
-[tool.flake8]
-ignore = ["F405", "F403", "E704", "D107"]
+# flake8 does not read pyproject.toml.  Its options live in .flake8 so
+# that a bare "flake8" matches what CI runs.
 [tool.pydocstyle]
 add_ignore = ["D107", "D205", "D102", "D400"]
 
@@ -106,45 +113,61 @@ ignore_missing_imports = true
 allow_untyped_calls = true
 
 [tool.isort]
-known_first_party = ["oidc_auth"]
+known_first_party = ["py_oidc_auth_client"]
+profile = "black"
+line_length = 79
 sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
 
 
+[tool.coverage.run]
+branch = true
+source = ["py_oidc_auth_client"]
+
 [tool.coverage.report]
+# Deliberately short.  Excluding "except OSError" and "except Exception"
+# hid 25 statements of error handling from the report, which is exactly
+# the code least likely to be exercised by accident.
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
-    "raise ImportError",
-    "except ImportError",
-    "except Exception",
-    "except OSError",
     "if __name__ == '__main__':",
+    "raise NotImplementedError",
+    "@(abc\\.)?abstractmethod",
 ]
 
 [tool.tox]
 legacy_tox_ini = """
 [tox]
 min_version = 4.0
-env_list = docs, lint, types
+# "test" is in the default list so a bare `tox` runs it.  CI still calls
+# `tox -e test` per Python version in its own matrix job.
+env_list = docs, lint, types, pkg
 passenv = *
 [testenv]
 passenv = *
 parallel_show_output = false
 [testenv:test]
 description = "Run the unit tests."
-deps = -e .[tests]
+extras = tests
 commands =
     python3 -m pytest -vv --cov=py_oidc_auth_client --cov-report=html:coverage_report --junitxml report.xml --cov-report xml tests/
-    python3 -m coverage report --fail-under=98.5 --precision=2
+    python3 -m coverage report --fail-under=100 --precision=2 --show-missing
 [testenv:docs]
 description = "Create the documentation."
-deps = -e .[docs]
-       codespell
+extras = docs
+deps = codespell
 allowlist_externals = make
                       codespell
+setenv = SPHINXOPTS = -W --keep-going
 commands = codespell {posargs: --quiet-level=2} docs/source
            make -C docs clean
            make -C docs html
+
+[testenv:linkcheck]
+description = "Check that documentation links still resolve."
+extras = docs
+allowlist_externals = make
+commands = make -C docs linkcheck
 
 [testenv:lint]
 description = "Check code quality."
@@ -157,17 +180,41 @@ deps = -e .
        codespell
        bandit[toml]
 commands =
-    python3 -m isort --check --profile black -t py312 -l 79 src
-    python3 -m flake8 src --count --max-complexity=10 --ignore=F405,F403,E704,W503,C901 --max-line-length=100 --statistics --show-source
-    codespell {posargs: --quiet-level=2} src/
+    python3 -m isort --check --diff -t py312 --profile black src
+    python3 -m flake8 src tests --count --statistics --show-source
+    codespell {posargs: --quiet-level=2} src/ tests/
     python3 -m pydocstyle src/py_oidc_auth_client
     bandit -r src/py_oidc_auth_client --severity-level medium --confidence-level high
+
+[testenv:format]
+description = "Apply the formatting that lint checks."
+deps = black
+       isort
+commands =
+    python3 -m black --line-length 79 src tests
+    python3 -m isort src tests
 [testenv:types]
 description = "Static type checking."
 deps = .
        mypy
        pytest-stub
 commands = python3 -m mypy --install-types --non-interactive
+
+[testenv:pkg]
+description = "Validate packaging metadata before it reaches PyPI."
+skip_install = true
+deps = validate-pyproject[all]
+       flit
+       twine
+allowlist_externals = rm
+# A misspelled key under [project] is silently ignored by the build
+# backend: that is how the classifiers went missing from 2603.0.1.
+commands =
+    python3 -m validate_pyproject pyproject.toml
+    python3 -m flit build
+    python3 -m twine check dist/*
+    python3 -c "import zipfile, glob, sys; w = glob.glob('dist/*.whl')[0]; z = zipfile.ZipFile(w); m = [n for n in z.namelist() if n.endswith('METADATA')][0]; t = z.read(m).decode(); assert 'Classifier: Programming Language :: Python :: 3.' in t, 'no Python version classifiers in wheel metadata'; assert any(n.endswith('py.typed') for n in z.namelist()), 'py.typed missing from wheel'; print('wheel metadata ok')"
+commands_post = rm -rf dist
 [testenv:release]
 description = "Bump a new version."
 deps = git-python

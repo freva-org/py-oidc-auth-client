@@ -31,7 +31,7 @@ Use a dedicated token cache location
 
    token = authenticate(
        host="https://auth.example.org",
-       store=TokenStore(path="~/.cache/py-oidc-auth-client/my-app-token.json"),
+       store=TokenStore(path="~/.cache/py-oidc-auth-client/my-app-token"),
    )
 
 Integrate the token into another client library
@@ -42,7 +42,7 @@ Integrate the token into another client library
    from py_oidc_auth_client import TokenStore, authenticate
 
    def build_auth_headers(host: str) -> dict[str, str]:
-       store = TokenStore(path="~/.cache/py-oidc-auth-client/my-client.json")
+       store = TokenStore(path="~/.cache/py-oidc-auth-client/my-client")
        token = authenticate(host=host, store=store)
        return token["headers"]
 
@@ -69,7 +69,7 @@ Use device flow in a headless session
    import asyncio
    from py_oidc_auth_client import Config, DeviceFlow, TokenStore, authenticate
 
-   store = TokenStore(path="~/.cache/py-oidc-auth-client/headless.json")
+   store = TokenStore(path="~/.cache/py-oidc-auth-client/headless")
    token = authenticate(
        host="https://auth.example.org",
        store=store,
@@ -90,7 +90,7 @@ Use multiple auth servers with one ``TokenStore``
 -------------------------------------------------
 
 When you talk to more than one auth service, one shared ``TokenStore`` is often enough.
-The store separates tokens by host internally, so the same token database can safely hold
+The store separates tokens by identity internally, so the same token database can safely hold
 entries for more than one auth server.
 
 .. code-block:: python

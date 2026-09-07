@@ -7,8 +7,10 @@ Usage::
     python -m py_oidc_auth_client https://myapp.example.com --timeout 120
     python -m py_oidc_auth_client https://myapp.example.com --force
     python -m py_oidc_auth_client --list
+    python -m py_oidc_auth_client --list --verbose
     python -m py_oidc_auth_client --clear
     python -m py_oidc_auth_client --remove https://myapp.example.com
+    python -m py_oidc_auth_client --remove a3f1c9d2e8b40571
 """
 
 from __future__ import annotations
@@ -16,7 +18,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Optional, Sequence
+import time
+from typing import Dict, List, Optional, Sequence, Tuple
 
 try:
     from rich_argparse import (
@@ -27,6 +30,124 @@ except ImportError:
 
 from . import TokenStore, authenticate
 from .exceptions import AuthError
+from .token_store import StoreEntry
+from .utils import DEFAULT_APP_NAME
+
+
+def _humanise(seconds: float) -> str:
+    """Render a duration compactly for a listing column."""
+    seconds = int(max(seconds, 0))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+    return f"{seconds // 86400}d"
+
+
+def _status(entry: StoreEntry, now: float) -> str:
+    """Describe what is still usable about an entry."""
+    if entry.access_valid(now):
+        return f"expires in {_humanise(entry.token.get('expires', 0) - now)}"
+    if entry.refresh_valid(now):
+        left = entry.token.get("refresh_expires", 0) - now
+        return f"refresh only, {_humanise(left)} left"
+    return "expired"
+
+
+def _describe(entry: StoreEntry, now: float) -> List[str]:
+    """Build the columns for one entry in the listing."""
+    identity = entry.identity
+    grant = identity.grant.display if identity.grant else "unknown grant"
+    details = []
+    if identity.client_id:
+        details.append(f"client={identity.client_id}")
+    if identity.scopes:
+        details.append("scopes=" + ",".join(identity.scopes))
+    if identity.audience:
+        details.append(f"audience={identity.audience}")
+    if identity.grant is None:
+        details.append("migrated")
+    return [grant, " ".join(details), _status(entry, now), entry.digest[:8]]
+
+
+def _resolve_target(store: TokenStore, target: str) -> Optional[str]:
+    """Resolve a ``--remove`` argument that looks like a digest prefix.
+
+    ``--list`` shows digests truncated, so the value a user copies from
+    it is a prefix rather than a whole digest.  Returns the full digest
+    on a unique match, ``target`` unchanged when it is not digest like
+    (a host URL), and ``None`` when the prefix is ambiguous.
+    """
+    if "/" in target or not target or not all(
+        char in "0123456789abcdef" for char in target
+    ):
+        return target
+    matches = [e.digest for e in store.entries() if e.digest.startswith(target)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        print(
+            f"Ambiguous digest {target!r}, matches: {', '.join(sorted(matches))}",
+            file=sys.stderr,
+        )
+        return None
+    return target
+
+
+def _print_listing(store: TokenStore, verbose: bool = False) -> None:
+    """Print cached tokens grouped by host.
+
+    Exchanged tokens are indented under the entry whose token was used
+    as the exchange subject, which is also the entry that would take
+    them with it if it were removed.
+    """
+    entries = store.entries()
+    if not entries:
+        print("No cached tokens.")
+        return
+
+    now = time.time()
+    by_parent: Dict[Optional[str], List[StoreEntry]] = {}
+    for entry in entries:
+        by_parent.setdefault(entry.parent, []).append(entry)
+    known = {entry.digest for entry in entries}
+
+    rows: List[Tuple[StoreEntry, List[str]]] = []
+
+    def walk(entry: StoreEntry, depth: int) -> None:
+        columns = _describe(entry, now)
+        if verbose:
+            columns[3] = entry.digest
+        indent = "  " + ("  " * depth) + ("\u2514\u2500 " if depth else "")
+        # Fold the tree indent into the first column so that everything
+        # to the right of it still lines up.
+        columns[0] = indent + columns[0]
+        rows.append((entry, columns))
+        for child in sorted(
+            by_parent.get(entry.digest, []), key=lambda e: e.identity.label
+        ):
+            walk(child, depth + 1)
+
+    # Roots are entries with no parent, plus orphans whose parent has
+    # already been evicted.
+    roots = [e for e in entries if e.parent is None or e.parent not in known]
+    for entry in sorted(roots, key=lambda e: (e.identity.host, e.identity.label)):
+        walk(entry, 0)
+
+    widths = [max(len(columns[i]) for _, columns in rows) for i in range(3)]
+    current_host = None
+    for entry, columns in rows:
+        if entry.identity.host != current_host:
+            print(entry.identity.host)
+            current_host = entry.identity.host
+        print(
+            f"{columns[0]:<{widths[0]}}  {columns[1]:<{widths[1]}}  "
+            f"{columns[2]:<{widths[2]}}  {columns[3]}".rstrip()
+        )
+        if verbose and entry.identity.issuer:
+            print(f"{' ' * (widths[0] + 2)}issuer={entry.identity.issuer}")
 
 
 def _build_parser(prog: str) -> argparse.ArgumentParser:
@@ -66,6 +187,7 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
         "--ports",
         help="Ports to try for the local callback server (code flow only).",
         default=[53100, 53101, 53102, 53103, 53104, 53105],
+        type=int,
         nargs="+",
     )
     # Auth options
@@ -82,10 +204,8 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--app-name",
-        default="py-oidc-auth",
-        help=(
-            "Application name for the cache directory " "(default: py-oidc-auth)."
-        ),
+        default=DEFAULT_APP_NAME,
+        help="Application name for the cache directory.",
     )
 
     # Store management
@@ -94,7 +214,7 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
         "--list",
         action="store_true",
         dest="list_hosts",
-        help="List all hosts with cached tokens, then exit.",
+        help="List cached tokens grouped by host, then exit.",
     )
     store_group.add_argument(
         "--clear",
@@ -103,8 +223,17 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
     )
     store_group.add_argument(
         "--remove",
-        metavar="HOST",
-        help="Remove the cached token for HOST, then exit.",
+        metavar="HOST_OR_DIGEST",
+        help=(
+            "Remove cached tokens, then exit.  A host removes every token "
+            "for that server; a digest removes one entry.  Tokens derived "
+            "by exchange are removed along with their subject."
+        ),
+    )
+    store_group.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show full digests and issuers in --list output.",
     )
 
     # Output options
@@ -141,14 +270,7 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
     # -- Store management commands (no host required) -------------------
 
     if args.list_hosts:
-        hosts = store.hosts()
-        if not hosts:
-            print("No cached tokens.")
-        else:
-            for host in sorted(hosts):
-                token = store.get(host)
-                status = "valid" if token else "expired"
-                print(f"  {host}  ({status})")
+        _print_listing(store, verbose=args.verbose)
         return 0
 
     if args.clear:
@@ -157,8 +279,13 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
         return 0
 
     if args.remove:
-        if store.remove(args.remove):
-            print(f"Removed token for {args.remove}")
+        target = _resolve_target(store, args.remove)
+        if target is None:
+            return 1
+        removed = store.remove(target)
+        if removed:
+            plural = "" if removed == 1 else "s"
+            print(f"Removed {removed} token{plural} for {args.remove}")
         else:
             print(f"No cached token for {args.remove}")
         return 0
@@ -173,6 +300,10 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
             args.host,
             store=store,
             app_name=args.app_name,
+            login_route=args.login_route,
+            token_route=args.token_route,
+            device_route=args.device_route,
+            redirect_ports=args.ports,
             force=args.force,
             timeout=args.timeout,
         )

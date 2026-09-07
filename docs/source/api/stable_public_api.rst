@@ -19,6 +19,14 @@ Supporting public types
 * :class:`py_oidc_auth_client.Config`
 * :class:`py_oidc_auth_client.Token`
 * :class:`py_oidc_auth_client.AuthError`
+* :class:`py_oidc_auth_client.AuthIdentity`
+* :class:`py_oidc_auth_client.Grant`
+* :class:`py_oidc_auth_client.StoreEntry`
+
+``AuthIdentity``, ``Grant`` and ``StoreEntry`` are types you read rather than build.
+Flows derive their own identity from the parameters you give them, and the store hands
+identities and entries back when you inspect the cache.  You should not need to
+construct an ``AuthIdentity`` in application code.
 
 Why ``TokenStore`` is listed with the main entry points
 -------------------------------------------------------
@@ -28,8 +36,8 @@ token reuse, refresh, and environment-specific separation possible. For many app
 choosing the right token storage layout is as important as choosing between
 ``authenticate()``, ``CodeFlow``, and ``DeviceFlow``.
 
-It also separates tokens by host internally, which means a single store can usually back
-multiple auth servers for the same application.
+It also separates tokens by identity internally, which means a single store can usually
+back multiple auth servers, clients and grants for the same application.
 
 Guidance
 --------

@@ -17,6 +17,12 @@ release = __version__
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
+# Render "Attributes" sections as field lists rather than as separate
+# .. attribute:: directives.  Without this napoleon documents each
+# attribute from the docstring and autodoc documents the same one again
+# from the annotation, which Sphinx reports as a duplicate.
+napoleon_use_ivar = True
+
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.napoleon",
@@ -67,7 +73,7 @@ napoleon_include_private_with_doc = False
 
 html_static_path = ["_static"]
 html_theme = "pydata_sphinx_theme"
-html_logo = os.path.join(html_static_path[0], "logo.png")
+html_logo = os.path.join(html_static_path[0], "favicon.png")
 templates_path = ["_templates"]
 html_favicon = os.path.join(html_static_path[0], "favicon.ico")
 html_css_files = ["custom.css"]
@@ -97,7 +103,15 @@ html_context = {
     "github_version": "main",
     "doc_path": "docs",
 }
-html_sidebars = {"**": ["sidebar-nav-bs"]}
+# pydata renders the "Section Navigation" heading even when the current
+# page has no toctree children, leaving an empty box.  Standalone pages
+# therefore opt out of the primary sidebar entirely.  Pages that live
+# under a section index (api/, guides/) keep it and list their siblings.
+html_sidebars = {
+    "**": ["sidebar-nav-bs"],
+    "whatsnew": [],
+    "code-of-conduct": [],
+}
 html_meta = {
     "description": "Client lib for the OpenID Connect authentication.",
     "keywords": "oauth2, oauth2.1, oidc, authentication, authorization, web, client.",

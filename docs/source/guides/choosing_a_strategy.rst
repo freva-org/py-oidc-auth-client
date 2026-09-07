@@ -37,10 +37,19 @@ Typical cases are:
 * application-specific token cache files
 * separate auth state for development, staging, and production
 * remote or batch jobs that depend on refresh tokens between runs
-* tools that talk to multiple auth servers and want one shared host-aware token database
+* tools that talk to multiple auth servers and want one shared token database
 
-``TokenStore`` already separates tokens by host internally, so multiple auth servers do
-not usually require multiple store instances.
+``TokenStore`` already separates tokens by identity internally, so multiple auth servers,
+and multiple clients or grants against the same server, do not require multiple store
+instances.
+
+.. note::
+
+   Each flow keeps its own cache entry.  A device flow login and an authorization code
+   login are stored separately even for the same server and client, as are tokens
+   obtained through the client credentials grant.  The high level
+   :func:`py_oidc_auth_client.authenticate` helper looks for any usable interactive
+   token before it picks a flow, so this isolation does not cost you an extra login.
 
 .. code-block:: python
 
