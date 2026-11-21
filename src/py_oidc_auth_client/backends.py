@@ -15,16 +15,20 @@ Support for generic OpenID Connect providers is added on top of the
 same interface.
 """
 
+import logging
+import secrets
 import urllib.parse
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Mapping, Optional, TypeVar, cast
+from dataclasses import dataclass, field
+from typing import Dict, Mapping, Optional, TypeVar, cast
 
 import httpx
 
 from .exceptions import AuthError
 from .types import DeviceAuthorizationResponse, JSONResponse, TokenResponse
-from .utils import Config, build_url
+from .utils import Config, build_url, pkce_pair
+
+logger = logging.getLogger(__name__)
 
 GRANT_TYPE_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code"
 
@@ -269,12 +273,19 @@ class ProviderBackend(ABC):
             raise AuthError(f"Invalid JSON from {url}: {error}")
 
 
+@dataclass
 class PyOIDCAuth(ProviderBackend):
     """Apply authentication flows tailored around py-oidc-auth servers.
 
     Authentication against these services doesn't need specification of
     ``client_id``, ``scopes``, ``client_secrets`` or other authentication
     methods as those are set by the server.
+
+    Both interactive flows use PKCE (RFC 7636) with a verifier that never
+    leaves the client: the S256 challenge goes to ``/login`` or
+    ``/device``, the verifier to the token endpoint.  Servers that
+    predate client side PKCE ignore the challenge; for the code flow the
+    verifier those servers put into ``state`` is used instead.
 
     Parameters
     -----------
@@ -283,9 +294,22 @@ class PyOIDCAuth(ProviderBackend):
         ``py-oidc-auth`` service.
     """
 
+    #: PKCE verifiers of pending code flow logins, keyed by ``state``.
+    _login_verifiers: Dict[str, str] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    #: PKCE verifiers of pending device logins, keyed by device code.
+    _device_verifiers: Dict[str, str] = field(
+        default_factory=dict, init=False, repr=False
+    )
+
     async def device_authorization(self) -> DeviceAuthorizationResponse:
         """Start device authorization; return the raw init payload."""
-        payload = await self.post_form(self._device_authorization_endpoint)
+        verifier, challenge = pkce_pair()
+        payload = await self.post_form(
+            self._device_authorization_endpoint,
+            {"code_challenge": challenge, "code_challenge_method": "S256"},
+        )
         for k in (
             "device_code",
             "user_code",
@@ -297,6 +321,7 @@ class PyOIDCAuth(ProviderBackend):
                     f"Device authorization missing '{k}'",
                     status_code=502,
                 )
+        self._device_verifiers[str(payload["device_code"])] = verifier
         return cast(DeviceAuthorizationResponse, payload)
 
     async def exchange_authorization_code(
@@ -306,23 +331,33 @@ class PyOIDCAuth(ProviderBackend):
         code: str,
         state: Optional[str] = None,
     ) -> TokenResponse:
-        """Definitions of supported authentication backends.
+        """Exchange an authorization code for tokens.
 
-        A backend encapsulates provider specific OIDC behaviour (endpoint
-        discovery, request shapes, parameter names) behind the
-        :class:`ProviderBackend` interface, so that the flows in
-        :mod:`py_oidc_auth_client.flows` stay provider agnostic.
+        The verifier is the one made for *state* by
+        :meth:`get_authorization_url`.  A server that ignored the
+        client's challenge returns its own ``state`` in the legacy form
+        ``<random>|<redirect_uri>|<verifier>``; the verifier is then
+        taken from there.
 
-        Currently implemented:
-
-            - PyOIDCAuth: authentication against ``py-oidc-auth`` services.
-
-        Support for generic OpenID Connect providers is added on top of the
-        same interface.
+        Raises
+        ------
+        AuthError
+            If a login was started here but *state* matches none of
+            them: the callback did not come from that login.
         """
         code_verifier: Optional[str] = None
-        if state:
+        if state and state in self._login_verifiers:
+            code_verifier = self._login_verifiers.pop(state)
+        elif state and "|" in state:
+            logger.debug("Server ignored the PKCE challenge, using its verifier")
             code_verifier = state.rpartition("|")[-1]
+        elif self._login_verifiers:
+            raise AuthError(
+                "The login callback does not belong to this login "
+                "(state mismatch); please try again.",
+                detail={"error": "invalid_request"},
+                status_code=400,
+            )
         data = {
             "code": code,
             "redirect_uri": redirect_uri,
@@ -334,10 +369,16 @@ class PyOIDCAuth(ProviderBackend):
     async def get_authorization_url(self, *, redirect_uri: str) -> str:
         """Build the URL used to start authorization code flow."""
         login_url_base = build_url(self.config.host, self.config.login_route)
+        verifier, challenge = pkce_pair()
+        state = secrets.token_urlsafe(16)
+        self._login_verifiers[state] = verifier
         params = {
             "redirect_uri": redirect_uri,
             "offline_access": "true",
             "prompt": "consent",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": state,
         }
         return f"{login_url_base}?{urllib.parse.urlencode(params)}"
 
@@ -351,8 +392,11 @@ class PyOIDCAuth(ProviderBackend):
             "grant_type": GRANT_TYPE_DEVICE_CODE,
             "device_code": device_code,
             "device-code": device_code,
+            "code_verifier": self._device_verifiers.get(device_code),
         }
-        return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
+        token = await self.post_form(self._token_endpoint, data)
+        self._device_verifiers.pop(device_code, None)
+        return cast(TokenResponse, token)
 
     async def refresh_token(self, token: str) -> TokenResponse:
         """Refresh a bearer token with help of a refresh token.

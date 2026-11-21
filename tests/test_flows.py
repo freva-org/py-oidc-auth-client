@@ -366,6 +366,44 @@ class TestDeviceFlowAuthenticate:
         assert "access_token" in result
 
 
+class TestDeviceFlowPkce:
+    """Device logins are bound to a client side PKCE verifier."""
+
+    @pytest.mark.asyncio
+    async def test_device_flow_with_pkce(
+        self, test_server: str, tmp_store: TokenStore, configure_server
+    ):
+        configure_server(pending_polls=1)
+        flow = DeviceFlow(test_server, store=tmp_store, timeout=10, interactive=False)
+        code = await flow.get_device_code()
+        token = await flow.poll(code["device_code"], interval=0)
+        assert "access_token" in token
+
+    @pytest.mark.asyncio
+    async def test_leaked_device_code_is_useless(
+        self, test_server: str, tmp_store: TokenStore, configure_server
+    ):
+        """Another client polling with only the device code is refused."""
+        configure_server(pending_polls=0)
+        flow = DeviceFlow(test_server, store=tmp_store, timeout=10, interactive=False)
+        code = await flow.get_device_code()
+        thief = DeviceFlow(test_server, store=tmp_store, timeout=10, interactive=False)
+        with pytest.raises(AuthError, match="invalid_grant"):
+            await thief.poll(code["device_code"], interval=0)
+
+    @pytest.mark.asyncio
+    async def test_device_flow_against_legacy_pkce_server(
+        self, legacy_pkce_server: str, tmp_store: TokenStore, configure_server
+    ):
+        configure_server(pending_polls=0)
+        flow = DeviceFlow(
+            legacy_pkce_server, store=tmp_store, timeout=10, interactive=False
+        )
+        code = await flow.get_device_code()
+        token = await flow.poll(code["device_code"], interval=0)
+        assert "access_token" in token
+
+
 class TestDeviceFlowRunDeviceFlow:
     """_run_device_flow internals: browser open failure."""
 
@@ -688,6 +726,23 @@ class TestCodeFlowRunCodeFlow:
         assert decoded["sub"] == "testuser"
         # Token should be persisted in the store
         assert tmp_store.get(test_server) is not None
+
+    @pytest.mark.asyncio
+    async def test_code_flow_against_legacy_pkce_server(
+        self, legacy_pkce_server: str, tmp_store: TokenStore
+    ):
+        """A server that ignores the client challenge still works."""
+        flow = CodeFlow(
+            legacy_pkce_server,
+            store=tmp_store,
+            timeout=10,
+            redirect_ports=[_free_port()],
+        )
+        with patch(
+            "webbrowser.open", side_effect=lambda url: requests.get(url, timeout=5)
+        ):
+            token = await flow._run_code_flow()
+        assert "access_token" in token
 
     @pytest.mark.asyncio
     async def test_code_flow_timeout(self, test_server: str, tmp_store: TokenStore):

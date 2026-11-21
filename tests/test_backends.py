@@ -11,7 +11,7 @@ from py_oidc_auth_client.backends import ProviderBackend, PyOIDCAuth
 from py_oidc_auth_client.exceptions import AuthError
 from py_oidc_auth_client.utils import Config
 
-from .conftest import MockTransport, make_raw_token_response
+from .conftest import MockTransport, make_raw_token_response, s256
 
 
 def _backend(
@@ -142,11 +142,76 @@ class TestPyOIDCAuth:
         parsed = urllib.parse.urlparse(url)
         query = urllib.parse.parse_qs(parsed.query)
         assert parsed.path == "/auth/v2/login"
+        state = query.pop("state")[0]
+        challenge = query.pop("code_challenge")[0]
         assert query == {
             "redirect_uri": ["http://localhost:53100/callback"],
             "offline_access": ["true"],
             "prompt": ["consent"],
+            "code_challenge_method": ["S256"],
         }
+        assert "|" not in state
+        assert s256(backend._login_verifiers[state]) == challenge
+
+    @pytest.mark.asyncio
+    async def test_exchange_uses_own_verifier(self):
+        transport = MockTransport().add(200, make_raw_token_response())
+        backend = _backend(transport=transport)
+        url = await backend.get_authorization_url(
+            redirect_uri="http://localhost:53100/callback"
+        )
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        state, challenge = query["state"][0], query["code_challenge"][0]
+        await backend.exchange_authorization_code(
+            code="CODE-1",
+            redirect_uri="http://localhost:53100/callback",
+            state=state,
+        )
+        verifier = _form(transport.requests[0])["code_verifier"][0]
+        assert s256(verifier) == challenge
+        assert backend._login_verifiers == {}
+
+    @pytest.mark.asyncio
+    async def test_exchange_rejects_foreign_state(self):
+        transport = MockTransport().add(200, make_raw_token_response())
+        backend = _backend(transport=transport)
+        await backend.get_authorization_url(
+            redirect_uri="http://localhost:53100/callback"
+        )
+        with pytest.raises(AuthError, match="state mismatch") as exc_info:
+            await backend.exchange_authorization_code(
+                code="CODE-1",
+                redirect_uri="http://localhost:53100/callback",
+                state="someone-elses-state",
+            )
+        assert exc_info.value.status_code == 400
+        assert transport.requests == []
+
+    @pytest.mark.asyncio
+    async def test_device_flow_sends_challenge_and_verifier(self):
+        transport = MockTransport()
+        transport.add(
+            200,
+            {
+                "device_code": "DEV-1",
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://a.example.com/verify",
+                "expires_in": 600,
+            },
+        )
+        transport.add(400, {"error": "authorization_pending"})
+        transport.add(200, make_raw_token_response())
+        backend = _backend(transport=transport)
+        await backend.device_authorization()
+        start = _form(transport.requests[0])
+        assert start["code_challenge_method"] == ["S256"]
+        with pytest.raises(AuthError):
+            await backend.get_device_token("DEV-1")
+        await backend.get_device_token("DEV-1")
+        for request in transport.requests[1:]:
+            verifier = _form(request)["code_verifier"][0]
+            assert s256(verifier) == start["code_challenge"][0]
+        assert backend._device_verifiers == {}
 
     @pytest.mark.asyncio
     async def test_exchange_authorization_code_extracts_verifier_from_state(self):
