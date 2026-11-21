@@ -1,0 +1,28 @@
+# py-oidc-auth-client development image.
+#
+#   just test    the test suite, in a container
+#   just cli     the client CLI, e.g. against `just dev`
+#
+# One service: the dev image for $PY with the checkout mounted. It uses the
+# host network, so the CLI reaches a py-oidc-auth server and Keycloak on
+# localhost (as started by `just dev`), and the browser reaches the code
+# flow's callback ports. The tests need no network beyond localhost.
+name: py-oidc-auth-client-dev
+
+services:
+  dev:
+    image: localhost/py-oidc-auth-client-dev:py${PY:-3.13}-${DEPS_HASH:-latest}
+    build:
+      context: ..
+      dockerfile: dev-env/Containerfile
+      args:
+        PY: ${PY:-3.13}
+    volumes:
+      - ..:/src:z
+    network_mode: host
+    init: true
+    environment:
+      # The justfile may run the container as your uid, which has no passwd
+      # entry in the image; getpass.getuser() (used by the code flow) then
+      # falls back to $USER.
+      USER: ${USER:-dev}
