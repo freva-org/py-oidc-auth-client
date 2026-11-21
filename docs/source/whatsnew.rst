@@ -34,6 +34,14 @@ v2611.0.0
   store by identity, so they no longer trigger the deprecation warning for
   host keyed store access.  A device flow login is reused by a later code
   flow and the other way round.
+* Token exchange (RFC 8693): ``exchange()``, ``exchange_async()`` and
+  ``ExchangeFlow``.  The subject token comes from another flow, a cached
+  identity or a token string; the exchanging server can be another one
+  than the subject's, for broker federation.  Exchanged tokens are cached
+  with a link to the subject's entry and exchanged again once they
+  expire.  Tokens carry ``issued_token_type``, and the ``TOKEN_TYPE_*``
+  constants name the RFC 8693 token types.
+* ``AuthIdentity.for_exchange`` takes ``host`` and ``resource``.
 * Device logins send the requested ``scope`` too.  Servers that ignore it
   grant their default scopes; a warning is logged when requested scopes
   are missing from the granted ones.

@@ -25,12 +25,18 @@ from typing import Dict, Mapping, Optional, TypeVar, cast
 import httpx
 
 from .exceptions import AuthError
-from .types import DeviceAuthorizationResponse, JSONResponse, TokenResponse
+from .types import (
+    TOKEN_TYPE_ACCESS,
+    DeviceAuthorizationResponse,
+    JSONResponse,
+    TokenResponse,
+)
 from .utils import Config, build_url, pkce_pair
 
 logger = logging.getLogger(__name__)
 
 GRANT_TYPE_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code"
+GRANT_TYPE_TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
 
 OIDCResponseType = TypeVar(
     "OIDCResponseType",
@@ -226,6 +232,48 @@ class ProviderBackend(ABC):
             If the refresh token is expired, revoked or unknown.  The
             flows treat this as recoverable and fall back to a full
             interactive login.
+        """
+
+    @abstractmethod
+    async def exchange_token(
+        self,
+        *,
+        subject_token: str,
+        subject_token_type: str = TOKEN_TYPE_ACCESS,
+        requested_token_type: Optional[str] = None,
+        audience: Optional[str] = None,
+        scope: Optional[str] = None,
+        resource: Optional[str] = None,
+    ) -> TokenResponse:
+        """Exchange a token for another one (RFC 8693).
+
+        Parameters
+        ----------
+        subject_token : str
+            The token to exchange, usually an access token.
+        subject_token_type : str
+            RFC 8693 type of *subject_token*.
+        requested_token_type : str or None
+            RFC 8693 type of the token wanted.  ``None`` leaves it to
+            the server, which normally issues an access token.
+        audience : str or None
+            Logical name of the service the new token is for.
+        scope : str or None
+            Space separated scopes wanted for the new token.
+        resource : str or None
+            URI of the service the new token is for.
+
+        Returns
+        -------
+        dict
+            Raw token response, usually with ``issued_token_type`` and
+            without a refresh token.
+
+        Raises
+        ------
+        AuthError
+            If the server refuses the exchange, e.g. ``invalid_target``
+            for an audience the subject token may not be exchanged for.
         """
 
     async def post_form(
@@ -436,6 +484,34 @@ class PyOIDCAuth(ProviderBackend):
             "grant_type": "refresh_token",
             "refresh_token": token,
             "refresh-token": token,
+        }
+        return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
+
+    async def exchange_token(
+        self,
+        *,
+        subject_token: str,
+        subject_token_type: str = TOKEN_TYPE_ACCESS,
+        requested_token_type: Optional[str] = None,
+        audience: Optional[str] = None,
+        scope: Optional[str] = None,
+        resource: Optional[str] = None,
+    ) -> TokenResponse:
+        """Exchange a token at the server's token endpoint (RFC 8693).
+
+        Depending on its configuration the server passes the exchange on
+        to its identity provider, or answers with a broker token of its
+        own.  The latter also accepts broker tokens of trusted peer
+        servers as *subject_token*.
+        """
+        data = {
+            "grant_type": GRANT_TYPE_TOKEN_EXCHANGE,
+            "subject_token": subject_token,
+            "subject_token_type": subject_token_type,
+            "requested_token_type": requested_token_type,
+            "audience": audience,
+            "scope": scope,
+            "resource": resource,
         }
         return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
 

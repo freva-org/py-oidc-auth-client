@@ -6,6 +6,12 @@ from typing_extensions import NotRequired, TypedDict
 
 AuthBackend = Literal["py-oidc-auth", "oidc"]
 
+#: RFC 8693 token type identifiers.
+TOKEN_TYPE_ACCESS = "urn:ietf:params:oauth:token-type:access_token"
+TOKEN_TYPE_REFRESH = "urn:ietf:params:oauth:token-type:refresh_token"
+TOKEN_TYPE_ID = "urn:ietf:params:oauth:token-type:id_token"
+TOKEN_TYPE_JWT = "urn:ietf:params:oauth:token-type:jwt"
+
 
 class DeviceAuthorizationResponse(TypedDict):
     """Response body from the OOIDC device endpoint query."""
@@ -27,6 +33,7 @@ class TokenResponse(TypedDict):
     refresh_token: NotRequired[str]
     refresh_expires_in: NotRequired[int]
     scope: NotRequired[str]
+    issued_token_type: NotRequired[str]
 
     # Supported compatibility fields
     expires: NotRequired[int]

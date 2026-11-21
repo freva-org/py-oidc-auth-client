@@ -31,6 +31,10 @@ class Token(TypedDict, total=False):
     headers : dict of str to str
         Pre built ``Authorization`` header ready for use with HTTP
         clients (e.g. ``{"Authorization": "Bearer eyJ..."}``)
+    issued_token_type : str
+        RFC 8693 type of an exchanged token, e.g.
+        ``urn:ietf:params:oauth:token-type:access_token``.  Only present
+        on tokens from a token exchange.
 
     Examples
     --------
@@ -57,6 +61,7 @@ class Token(TypedDict, total=False):
     refresh_expires: int
     scope: str
     headers: Dict[str, str]
+    issued_token_type: str
 
 
 class DeviceCode(TypedDict):

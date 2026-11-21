@@ -334,6 +334,8 @@ class AuthIdentity:
         scopes: Optional[Iterable[str]] = None,
         requested_token_type: Optional[str] = None,
         subject: Optional[str] = None,
+        host: Optional[str] = None,
+        resource: Optional[str] = None,
     ) -> "AuthIdentity":
         """Derive the identity of a token exchanged from this one.
 
@@ -359,6 +361,12 @@ class AuthIdentity:
             Derive it from stable claims (``iss``, ``sub``, ``azp``) and
             never from the token string.  Defaults to this identity's
             digest.
+        host : str or None
+            Server performing the exchange, when it is not this
+            identity's host: a token from one server exchanged at
+            another (federation).  Defaults to this identity's host.
+        resource : str or None
+            RFC 8693 ``resource`` requested for the exchanged token.
 
         Returns
         -------
@@ -380,18 +388,21 @@ class AuthIdentity:
         True
         >>> child.digest == parent.for_exchange(audience="other").digest
         False
+        >>> parent.for_exchange(host="https://peer").host
+        'https://peer'
         """
-        material = json.dumps(
-            {
-                "subject": subject or self.digest,
-                "requested_token_type": requested_token_type,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        inputs: Dict[str, Optional[str]] = {
+            "subject": subject or self.digest,
+            "requested_token_type": requested_token_type,
+        }
+        if resource:
+            # Only when set, so digests of existing entries stay the same.
+            inputs["resource"] = resource
+        material = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
         token = hashlib.sha256(material.encode("utf-8")).hexdigest()
         return replace(
             self,
+            host=host or self.host,
             grant=Grant.TOKEN_EXCHANGE,
             audience=audience,
             scopes=(normalise_scopes(scopes) if scopes is not None else self.scopes),

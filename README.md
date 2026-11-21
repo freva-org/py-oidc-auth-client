@@ -22,6 +22,7 @@ While **py-oidc-auth** helps you add OpenID Connect login, token, and device end
 * `TokenStore` as a first-class, host-aware token persistence layer
 * Device flow for headless sessions
 * Authorization code flow for interactive logins
+* Token exchange (RFC 8693) with `exchange()`, also across trusting servers
 * Token caching and refresh token support
 * Fully typed public API
 
@@ -169,15 +170,35 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Token exchange
+
+`exchange()` turns a token into another one: for another audience, with fewer
+scopes, or for a peer server that trusts this one. The exchanged token is cached
+and exchanged again from a fresh subject token when it expires.
+
+```python
+from py_oidc_auth_client import DeviceFlow, exchange
+
+# Your login on the server, exchanged for a token for another service
+token = exchange("https://auth.example.org", audience="s3-gateway")
+
+# A login on one server, used at a peer server
+login = DeviceFlow("https://auth.example.org")
+peer_token = exchange("https://peer.example.org", subject=login)
+```
+
 ## Stable public API
 
 The main public building blocks are:
 
 * `authenticate`
 * `authenticate_async`
+* `exchange`
+* `exchange_async`
 * `TokenStore`
 * `CodeFlow`
 * `DeviceFlow`
+* `ExchangeFlow`
 * `Config`
 * `Token`
 * `AuthError`

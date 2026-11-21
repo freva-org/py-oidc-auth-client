@@ -108,3 +108,60 @@ entries for more than one auth server.
        host="https://auth-b.example.org",
        store=store,
    )
+
+
+Exchange a token for another service
+------------------------------------
+
+Token exchange (RFC 8693) turns a token you have into one for another audience or with
+fewer scopes.  Without a ``subject``, :func:`~py_oidc_auth_client.exchange` exchanges
+your login on the same server, logging in first if needed:
+
+.. code-block:: python
+
+   from py_oidc_auth_client import TokenStore, exchange
+
+   store = TokenStore(app_name="my-app")
+   token = exchange(
+       host="https://auth.example.org",
+       audience="s3-gateway",
+       scopes="read",
+       store=store,
+   )
+
+Exchanged tokens usually have no refresh token.  The result is cached and linked to the
+login it came from: once it expires, the next call exchanges a fresh subject token, and
+removing the login from the store removes the exchanged token too.
+
+The subject can be any flow, the identity of a cached token, or a token you got
+elsewhere:
+
+.. code-block:: python
+
+   import os
+
+   from py_oidc_auth_client import CodeFlow, exchange
+
+   token = exchange(
+       host="https://auth.example.org",
+       subject=CodeFlow("https://auth.example.org", store=store),
+       audience="s3-gateway",
+       store=store,
+   )
+   token = exchange(host="https://auth.example.org", subject=os.environ["CI_TOKEN"])
+
+
+Use a login at a trusting peer server
+-------------------------------------
+
+A py-oidc-auth server in broker mode accepts tokens of the peer servers it trusts as
+exchange subjects.  Exchange your login on one server at the other one:
+
+.. code-block:: python
+
+   from py_oidc_auth_client import DeviceFlow, exchange
+
+   login = DeviceFlow("https://freva.dkrz.de", store=store)
+   token = exchange(host="https://freva.example.org", subject=login, store=store)
+
+The token is minted by the peer and expires with the subject token.
