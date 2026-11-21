@@ -120,7 +120,14 @@ import asyncio
 from typing import Iterable, List, Optional, Union
 
 from .exceptions import AuthError
-from .flows import BaseFlow, CodeFlow, DeviceFlow, ExchangeFlow, Subject
+from .flows import (
+    BaseFlow,
+    CodeFlow,
+    DeviceFlow,
+    ExchangeFlow,
+    LoginFlow,
+    Subject,
+)
 from .identity import AuthIdentity, Grant
 from .schema import DeviceCode, Token
 from .token_store import StoreEntry, TokenStore
@@ -129,6 +136,7 @@ from .types import (
     TOKEN_TYPE_ID,
     TOKEN_TYPE_JWT,
     TOKEN_TYPE_REFRESH,
+    TOKEN_TYPES,
 )
 from .utils import Config
 
@@ -369,37 +377,18 @@ async def authenticate_async(
     --------
     authenticate : Synchronous wrapper for non async code.
     """
-    effective_store = store or TokenStore(app_name=app_name)
-    # Try device flow first (works headless and interactively)
-    device = DeviceFlow(
+    flow = LoginFlow(
         host,
         redirect_ports=redirect_ports,
         login_route=login_route,
         device_route=device_route,
         token_route=token_route,
-        store=effective_store,
+        store=store or TokenStore(app_name=app_name),
         timeout=timeout,
         scopes=scopes,
         identity=identity,
     )
-    try:
-        return await device.authenticate(force=force)
-    except AuthError as device_error:
-        if device_error.status_code == 503:
-            # Server does not support device flow, fall back to code flow
-            code = CodeFlow(
-                host,
-                redirect_ports=redirect_ports,
-                login_route=login_route,
-                device_route=device_route,
-                token_route=token_route,
-                store=effective_store,
-                timeout=timeout,
-                scopes=scopes,
-                identity=identity,
-            )
-            return await code.authenticate(force=force)
-        raise
+    return await flow.authenticate(force=force)
 
 
 def exchange(
@@ -431,7 +420,7 @@ def exchange(
     subject : DeviceFlow or CodeFlow or ExchangeFlow or AuthIdentity or str
         Where the subject token comes from: a flow, which is asked for
         a valid token first (and may log in); the identity of a cached
-        token; or a token string.  ``None`` uses a device flow login on
+        token; or a token string.  ``None`` uses a login (device, else code flow) on
         *host*.
     audience : str or None
         Service the new token is for.
@@ -440,8 +429,9 @@ def exchange(
     resource : str or None
         URI of the service the new token is for.
     requested_token_type : str or None
-        RFC 8693 type of the token wanted, e.g.
-        :data:`TOKEN_TYPE_ACCESS`.  ``None`` leaves it to the server.
+        RFC 8693 type of the token wanted, as a URN such as
+        :data:`TOKEN_TYPE_ACCESS` or a short name (``access``,
+        ``refresh``, ``id``, ``jwt``).  ``None`` leaves it to the server.
     subject_token_type : str
         RFC 8693 type of the subject token.
     token_route : str
@@ -572,12 +562,14 @@ __all__ = [
     "DeviceFlow",
     "ExchangeFlow",
     "Grant",
+    "LoginFlow",
     "StoreEntry",
     "Subject",
     "TOKEN_TYPE_ACCESS",
     "TOKEN_TYPE_ID",
     "TOKEN_TYPE_JWT",
     "TOKEN_TYPE_REFRESH",
+    "TOKEN_TYPES",
     "Token",
     "TokenStore",
     "authenticate",

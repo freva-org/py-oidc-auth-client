@@ -7,6 +7,12 @@ Usage::
     python -m py_oidc_auth_client https://myapp.example.com --timeout 120
     python -m py_oidc_auth_client https://myapp.example.com --scope openid email
     python -m py_oidc_auth_client https://myapp.example.com --force
+    python -m py_oidc_auth_client https://myapp.example.com --flow code
+    python -m py_oidc_auth_client https://myapp.example.com --audience other-app
+    python -m py_oidc_auth_client https://peer.example.org \
+        --subject-host https://myapp.example.com
+    echo "$TOKEN" | python -m py_oidc_auth_client https://myapp.example.com \
+        --flow exchange --subject-token -
     python -m py_oidc_auth_client --list
     python -m py_oidc_auth_client --list --verbose
     python -m py_oidc_auth_client --clear
@@ -17,10 +23,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 try:
     from rich_argparse import (
@@ -29,10 +36,23 @@ try:
 except ImportError:
     from argparse import ArgumentDefaultsHelpFormatter as ArgumentFormatter
 
-from . import TokenStore, authenticate
+from . import TokenStore, authenticate, exchange
 from .exceptions import AuthError
+from .flows import CodeFlow, DeviceFlow, LoginFlow
+from .schema import Token
 from .token_store import StoreEntry
+from .types import TOKEN_TYPES
 from .utils import DEFAULT_APP_NAME
+
+FLOWS = ("auto", "device", "code", "exchange")
+#: Options that only make sense for a token exchange.
+EXCHANGE_OPTIONS = (
+    "audience",
+    "resource",
+    "requested_token_type",
+    "subject_host",
+    "subject_token",
+)
 
 
 def _humanise(seconds: float) -> str:
@@ -193,9 +213,20 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
     )
     # Auth options
     parser.add_argument(
+        "-f",
+        "--flow",
+        choices=FLOWS,
+        default="auto",
+        help=(
+            "How to get the token.  auto: an exchange if an exchange option "
+            "is given, otherwise a login with the device flow, or the code "
+            "flow where the server has no device flow."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
-        help="Force a fresh login even if a cached token exists.",
+        help="Log in, or exchange, again even if a cached token exists.",
     )
     parser.add_argument(
         "-s",
@@ -216,6 +247,44 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
         "--app-name",
         default=DEFAULT_APP_NAME,
         help="Application name for the cache directory.",
+    )
+
+    # Token exchange
+    exchange_group = parser.add_argument_group(
+        "token exchange (RFC 8693)",
+        "Any of these selects --flow exchange.  --scope sets the scopes of "
+        "the exchanged token.",
+    )
+    exchange_group.add_argument(
+        "--audience",
+        help="Service the exchanged token is for.",
+    )
+    exchange_group.add_argument(
+        "--resource",
+        help="URI of the service the exchanged token is for.",
+    )
+    exchange_group.add_argument(
+        "--requested-token-type",
+        metavar="TYPE",
+        help=(
+            "Type of the token wanted: " + ", ".join(TOKEN_TYPES) + " or a "
+            "token type URN.  Left to the server when not given."
+        ),
+    )
+    subject = exchange_group.add_mutually_exclusive_group()
+    subject.add_argument(
+        "--subject-host",
+        metavar="URL",
+        help=(
+            "Exchange your login on this server instead of the one on "
+            "HOST (logging in there first if needed), e.g. for a peer "
+            "server that trusts it."
+        ),
+    )
+    subject.add_argument(
+        "--subject-token",
+        metavar="TOKEN",
+        help="Exchange this token; - reads it from stdin.",
     )
 
     # Store management
@@ -305,21 +374,12 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
     if not args.host:
         parser.error("host is required for authentication")
 
+    flow = _choose_flow(parser, args)
     try:
-        token = authenticate(
-            args.host,
-            store=store,
-            app_name=args.app_name,
-            login_route=args.login_route,
-            token_route=args.token_route,
-            device_route=args.device_route,
-            redirect_ports=args.ports,
-            force=args.force,
-            timeout=args.timeout,
-            scopes=args.scopes,
-        )
+        token = _run_flow(flow, args, store)
     except AuthError as exc:
-        print(f"Authentication failed: {exc}", file=sys.stderr)
+        verb = "Token exchange" if flow == "exchange" else "Authentication"
+        print(f"{verb} failed: {exc}", file=sys.stderr)
         return 1
 
     if args.output_json:
@@ -327,11 +387,78 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
     else:
         access = token.get("access_token", "")
         preview = f"{access[:20]}..." if len(access) > 20 else access
-        print(f"Authenticated to {args.host}")
+        if flow == "exchange":
+            print(f"Exchanged a token at {args.host}")
+            print(f"  issued_token_type: {token.get('issued_token_type', '')}")
+        else:
+            print(f"Authenticated to {args.host}")
         print(f"  access_token: {preview}")
         print(f"  scope:        {token.get('scope', '')}")
 
     return 0
+
+
+def _choose_flow(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    """Resolve ``--flow auto`` and reject options that do not fit the flow."""
+    given = [
+        "--" + name.replace("_", "-")
+        for name in EXCHANGE_OPTIONS
+        if getattr(args, name) is not None
+    ]
+    if args.flow == "auto":
+        return "exchange" if given else "auto"
+    if given and args.flow != "exchange":
+        parser.error(f"{', '.join(given)} only work with --flow exchange")
+    return str(args.flow)
+
+
+def _run_flow(flow: str, args: argparse.Namespace, store: TokenStore) -> Token:
+    """Get the token the chosen way."""
+    routes = {
+        "login_route": args.login_route,
+        "token_route": args.token_route,
+        "device_route": args.device_route,
+        "redirect_ports": args.ports,
+    }
+    if flow == "auto":
+        return authenticate(
+            args.host,
+            store=store,
+            app_name=args.app_name,
+            force=args.force,
+            timeout=args.timeout,
+            scopes=args.scopes,
+            **routes,
+        )
+    if flow in ("device", "code"):
+        cls = DeviceFlow if flow == "device" else CodeFlow
+        login = cls(
+            args.host, store=store, timeout=args.timeout, scopes=args.scopes, **routes
+        )
+        return asyncio.run(login.authenticate(force=args.force))
+    subject: Optional[Union[LoginFlow, str]] = None
+    if args.subject_token is not None:
+        subject = args.subject_token
+        if subject == "-":
+            subject = sys.stdin.read().strip()
+        if not subject:
+            raise AuthError("No subject token given.", status_code=400)
+    elif args.subject_host is not None:
+        subject = LoginFlow(
+            args.subject_host, store=store, timeout=args.timeout, **routes
+        )
+    return exchange(
+        args.host,
+        subject=subject,
+        audience=args.audience,
+        scopes=args.scopes,
+        resource=args.resource,
+        requested_token_type=args.requested_token_type,
+        token_route=args.token_route,
+        store=store,
+        force=args.force,
+        timeout=args.timeout,
+    )
 
 
 if __name__ == "__main__":

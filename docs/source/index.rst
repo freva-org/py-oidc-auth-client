@@ -217,6 +217,33 @@ Quick start
         $ python -m py_oidc_auth_client --list
         $ python -m py_oidc_auth_client --remove https://auth.example.org
 
+Command line
+------------
+
+``python -m py_oidc_auth_client HOST`` (or ``oidc-auth HOST``) gets a token for a
+server and prints it, as JSON with ``--json``.  ``--flow`` picks how:
+
+``auto`` (default)
+    A token exchange when an exchange option is given; otherwise a login with the
+    device flow, or with the code flow where the server has no device flow.
+``device``, ``code``
+    That login flow, and nothing else.
+``exchange``
+    Exchange a token (RFC 8693).  The subject is your login on ``HOST`` unless
+    ``--subject-host`` names another server or ``--subject-token`` passes a token
+    (``-`` reads it from stdin).
+
+.. code-block:: console
+
+    $ oidc-auth https://auth.example.org                         # log in
+    $ oidc-auth https://auth.example.org --flow code              # with the browser
+    $ oidc-auth https://auth.example.org --audience s3-gateway --scope read --json
+    $ oidc-auth https://peer.example.org --subject-host https://auth.example.org
+    $ echo "$TOKEN" | oidc-auth https://auth.example.org --subject-token - \
+        --requested-token-type jwt
+
+Exchanged tokens are cached like logins; ``--force`` exchanges again.
+
 Guides and reference
 --------------------
 

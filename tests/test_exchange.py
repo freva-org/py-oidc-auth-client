@@ -17,7 +17,13 @@ from py_oidc_auth_client import (
     exchange_async,
 )
 from py_oidc_auth_client.exceptions import AuthError
-from py_oidc_auth_client.flows import CodeFlow, DeviceFlow, ExchangeFlow, _subject_id
+from py_oidc_auth_client.flows import (
+    CodeFlow,
+    DeviceFlow,
+    ExchangeFlow,
+    LoginFlow,
+    _subject_id,
+)
 from py_oidc_auth_client.identity import AuthIdentity, Grant
 from py_oidc_auth_client.token_store import TokenStore
 
@@ -96,9 +102,9 @@ class TestExchangeIdentity:
         assert flow.identity == login.identity.for_exchange(audience="s3", scopes=())
         assert flow.identity.grant is Grant.TOKEN_EXCHANGE
 
-    def test_default_subject_is_device_login_on_host(self, tmp_store: TokenStore):
+    def test_default_subject_is_login_on_host(self, tmp_store: TokenStore):
         flow = ExchangeFlow(HOST, store=tmp_store, token_route="/x/token")
-        assert isinstance(flow.subject, DeviceFlow)
+        assert isinstance(flow.subject, LoginFlow)
         assert flow.subject.identity == DeviceFlow(HOST, store=tmp_store).identity
         assert flow.subject.provider.config.token_route == "/x/token"
         assert flow.subject.store is tmp_store

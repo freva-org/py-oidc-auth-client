@@ -3,6 +3,24 @@ What's new
 
 This document highlights major changes and additions across releases.
 
+Unreleased
+----------
+* The command line picks the flow with ``--flow auto|device|code|exchange``.
+  ``auto``, the default, exchanges a token when an exchange option is given
+  and otherwise logs in with the device flow, or with the code flow where
+  the server has no device flow.
+* Token exchange from the command line: ``--audience``, ``--resource``,
+  ``--requested-token-type``, and ``--subject-host`` (your login on another
+  server) or ``--subject-token`` (a token, ``-`` for stdin) as the subject.
+* :class:`~py_oidc_auth_client.flows.LoginFlow` is the device-then-code
+  login behind ``authenticate()``, and the default subject of
+  ``exchange()``, which used to try the device flow only.  It falls back to
+  the code flow on a missing device endpoint (404, 405, 501, 503) or an
+  ``unauthorized_client`` / ``unsupported_grant_type`` reply; before, only a
+  503 did.
+* Token types can be given by short name: ``access``, ``refresh``, ``id``,
+  ``jwt`` (``TOKEN_TYPES``).
+
 v2611.0.0
 ----------
 * Tokens without a refresh token, such as exchanged tokens, are no longer

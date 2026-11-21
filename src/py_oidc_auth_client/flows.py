@@ -4,7 +4,7 @@ Authentication Flows
 
 OIDC/OAuth 2.0 client side authentication flows.
 
-The module provides four classes arranged in an inheritance hierarchy:
+The module provides five classes arranged in an inheritance hierarchy:
 
 .. code-block:: text
 
@@ -12,6 +12,7 @@ The module provides four classes arranged in an inheritance hierarchy:
       |
       +-- DeviceFlow    (OAuth 2.0 Device Authorization Grant)
       +-- CodeFlow      (OAuth 2.0 Authorization Code Grant with PKCE)
+      +-- LoginFlow     (device flow, falling back to the code flow)
       +-- ExchangeFlow  (OAuth 2.0 Token Exchange, RFC 8693)
 
 All flow classes share a process wide token store via :class:`BaseFlow`
@@ -50,7 +51,7 @@ from asyncio import sleep as asleep
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
-from typing import Any, ClassVar, Iterable, List, Optional, Union
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Union
 
 from .backends import PyOIDCAuth
 from .exceptions import AuthError
@@ -63,7 +64,7 @@ from .identity import (
 )
 from .schema import DeviceCode, Token
 from .token_store import StoreEntry, TokenStore
-from .types import TOKEN_TYPE_ACCESS, TokenResponse
+from .types import TOKEN_TYPE_ACCESS, TokenResponse, token_type_urn
 from .utils import (
     Config,
     choose_token_strategy,
@@ -1053,6 +1054,111 @@ class CodeFlow(BaseFlow):
 
 
 # -----------------------------------------------------------------------
+# LoginFlow
+# -----------------------------------------------------------------------
+
+#: HTTP statuses that mean "this server has no device flow".
+_NO_DEVICE_STATUSES = frozenset({404, 405, 501, 503})
+#: OAuth errors that mean "this client may not use the device flow".
+_NO_DEVICE_ERRORS = frozenset({"unauthorized_client", "unsupported_grant_type"})
+
+
+def device_flow_unavailable(error: AuthError) -> bool:
+    """Tell whether *error* means the device flow is not offered at all.
+
+    True for a missing or disabled device endpoint (404, 405, 501, 503)
+    and for a client that may not use the grant (``unauthorized_client``,
+    ``unsupported_grant_type``).  False for everything that can go wrong
+    during a device login itself: a denied or expired request, a timeout.
+    """
+    return (
+        error.status_code in _NO_DEVICE_STATUSES
+        or error.error in _NO_DEVICE_ERRORS
+    )
+
+
+class LoginFlow(BaseFlow):
+    """Interactive login: the device flow, or the code flow where it is not.
+
+    The flow behind :func:`~py_oidc_auth_client.authenticate`.  A cached
+    token from either grant is used, or refreshed, first.  Otherwise the
+    device flow runs, which works on headless machines too; when the
+    server does not offer it (see :func:`device_flow_unavailable`), the
+    code flow runs instead.
+
+    New tokens are stored under the identity of the flow that minted
+    them.  :attr:`identity` is the device flow's.
+
+    Parameters
+    ----------
+    host : str
+        Base URL of the server.
+    config : Config or None
+        Full configuration object.  Overrides *host* and the routes.
+    store : TokenStore or None
+        Custom token store.  Shared default when ``None``.
+    timeout : int or None
+        HTTP and polling timeout in seconds.
+    **kwargs
+        Routes, ``redirect_ports``, ``scopes`` and ``identity``, as for
+        the other flows.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from py_oidc_auth_client.flows import LoginFlow
+
+        token = await LoginFlow("https://myapp.example.com").authenticate()
+    """
+
+    grant: ClassVar[Grant] = Grant.DEVICE_CODE
+
+    def _inner(self, cls: Any) -> Any:
+        """Create a device or code flow with this flow's settings."""
+        kwargs: Dict[str, Any] = {"identity": self._identity}
+        if not self._explicit_identity:
+            kwargs = {"scopes": self._identity.scopes}
+        return cls(
+            config=self.provider.config,
+            store=self.store,
+            timeout=self.provider.timeout,
+            **kwargs,
+        )
+
+    async def authenticate(self, *, force: bool = False) -> Token:
+        """Return a valid token: cached, refreshed, or from a new login.
+
+        Parameters
+        ----------
+        force : bool
+            Log in again even if a valid token is cached.
+
+        Returns
+        -------
+        Token
+            The token.
+
+        Raises
+        ------
+        AuthError
+            If the login fails.
+        """
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
+        device: DeviceFlow = self._inner(DeviceFlow)
+        try:
+            return await device._run_device_flow()
+        except AuthError as error:
+            if not device_flow_unavailable(error):
+                raise
+            logger.info("No device flow on this server (%s), using the code flow", error)
+        code: CodeFlow = self._inner(CodeFlow)
+        return await code._run_code_flow()
+
+
+# -----------------------------------------------------------------------
 # ExchangeFlow
 # -----------------------------------------------------------------------
 
@@ -1093,7 +1199,7 @@ class ExchangeFlow(BaseFlow):
     * an :class:`~identity.AuthIdentity` whose token is in the store;
     * a token string obtained elsewhere.
 
-    Without a *subject*, the subject is a :class:`DeviceFlow` login on
+    Without a *subject*, the subject is a :class:`LoginFlow` login on
     *host*.
 
     Exchanged tokens usually come without a refresh token.  The result
@@ -1117,10 +1223,12 @@ class ExchangeFlow(BaseFlow):
     resource : str or None
         URI of the service the new token is for (``resource``).
     requested_token_type : str or None
-        RFC 8693 type of the token wanted.  ``None`` leaves it to the
-        server.
+        RFC 8693 type of the token wanted, as a URN or a short name
+        (``access``, ``refresh``, ``id``, ``jwt``).  ``None`` leaves it to
+        the server.
     subject_token_type : str
         RFC 8693 type of the subject token, an access token by default.
+        Short names work here too.
     store : TokenStore or None
         Custom token store.  Shared default when ``None``.  Also used
         for the subject's token.
@@ -1177,8 +1285,10 @@ class ExchangeFlow(BaseFlow):
         self._subject_spec = subject
         self.audience = audience
         self.resource = resource
-        self.requested_token_type = requested_token_type
-        self.subject_token_type = subject_token_type
+        self.requested_token_type = token_type_urn(requested_token_type)
+        self.subject_token_type = token_type_urn(subject_token_type) or (
+            TOKEN_TYPE_ACCESS
+        )
         super().__init__(
             host, config, store=store, timeout=timeout, scopes=scopes, **kwargs
         )
@@ -1194,7 +1304,7 @@ class ExchangeFlow(BaseFlow):
         """Derive the exchanged token's identity from the subject's."""
         subject = self._subject_spec
         if subject is None:
-            subject = DeviceFlow(
+            subject = LoginFlow(
                 config=self.provider.config,
                 store=self.store,
                 timeout=self.provider.timeout,

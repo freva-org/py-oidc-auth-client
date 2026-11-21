@@ -187,6 +187,14 @@ login = DeviceFlow("https://auth.example.org")
 peer_token = exchange("https://peer.example.org", subject=login)
 ```
 
+The same from the command line, where `--flow auto|device|code|exchange` picks the
+flow and any exchange option selects the exchange:
+
+```console
+oidc-auth https://auth.example.org --audience s3-gateway --json
+oidc-auth https://peer.example.org --subject-host https://auth.example.org
+```
+
 ## Stable public API
 
 The main public building blocks are:

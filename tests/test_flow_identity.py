@@ -312,7 +312,7 @@ class TestAuthenticateIdentity:
         ident = _py_identity(scopes=("openid",))
         token = make_token()
         no_device = AsyncMock(side_effect=AuthError("no device", status_code=503))
-        with patch.object(DeviceFlow, "authenticate", no_device):
+        with patch.object(DeviceFlow, "_run_device_flow", no_device):
             with patch.object(CodeFlow, "_run_code_flow", autospec=True) as run:
                 run.return_value = token
                 result = await authenticate_async(HOST, store=tmp_store, identity=ident)
