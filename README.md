@@ -219,7 +219,21 @@ just check                # all of the above, as CI runs them
 
 The first run builds a dev image per Python version with the dependencies installed.
 The checkout is mounted into it, so edits apply without a rebuild, and a change to
-`pyproject.toml` gets a fresh image.
+`pyproject.toml` gets a fresh image. `just setup` does that up front, clones
+py-oidc-auth (see below) and turns on the git hooks.
+
+#### Git hooks
+
+`just setup` and `just dev` turn on the hooks in `.githooks`:
+
+* **pre-commit** runs `lint` and `types` (a few seconds), only for commits that touch
+  `src/`, `tests/` or `pyproject.toml`. It checks the working tree, unstaged edits
+  included. If it fails on formatting, `just fmt` fixes it.
+* **pre-push** runs what CI runs: `lint`, `types`, `docs`, `pkg` and the tests on
+  `$PY` (under a minute). `PREPUSH_ALL=1 git push` tests every Python version.
+
+Both need docker or podman running. Skip them once with `--no-verify`, for a whole
+shell with `SKIP_HOOKS=1`, or turn them off with `just hooks-off`.
 
 To work on client and server together, `just dev` clones
 [py-oidc-auth](https://github.com/freva-org/py-oidc-auth) into `dev-env/py-oidc-auth`

@@ -1,5 +1,6 @@
 # py-oidc-auth-client development.
 #
+#   just setup                the dev image, the py-oidc-auth checkout, git hooks
 #   just test [pytest args]   the tests, in a container on Python $PY
 #   just check                lint, types, docs, packaging and tests
 #   just dev [framework]      Keycloak and a py-oidc-auth dev server on :7777
@@ -18,6 +19,11 @@
 # dev-env/py-oidc-auth (untracked, no submodule) and runs that checkout's own
 # `just dev`: Keycloak on :8080 and the server on :7777. `just update-server`
 # fast-forwards it to origin/main. Nothing is ever pushed from here.
+#
+# The git hooks in .githooks run the same checks: lint and types before a
+# commit that touches code, what CI runs before a push. `just setup` and
+# `just dev` turn them on, `just hooks-off` turns them off, and
+# `--no-verify` or SKIP_HOOKS=1 skips them.
 #
 # The recipes that run inside the container live in dev-env/container.just;
 # the ones here drive compose from outside.
@@ -52,10 +58,39 @@ default:
     @echo "  server      http://localhost:7777  (just dev, from {{ server }})"
     @echo "  keycloak    http://localhost:8080  (admin: keycloak / secret, you: ${USER:-$(id -un)} / secret)"
 
+# --- setup ------------------------------------------------------------------
+
+# Get going: clone py-oidc-auth, build the dev image, turn on the git hooks
+[group('setup')]
+setup: fetch build hooks
+
+# Turn on the git hooks: lint and types before commits, CI before pushes
+[group('setup')]
+hooks:
+    @git config core.hooksPath .githooks
+
+# Turn the git hooks off again
+[group('setup')]
+hooks-off:
+    git config --unset core.hooksPath || true
+
+# Run container recipes for a git hook, in one container start
+[private]
+_hook name *recipes:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    name=$1; shift
+    if ! {{ engine }} info >/dev/null 2>&1; then
+      echo "$name hook: {{ engine }} is not running. Start it, or skip the hook with --no-verify." >&2
+      exit 1
+    fi
+    echo "$name hook: just $* (skip with --no-verify)" >&2
+    {{ run }} -T dev just "$@"
+
 # --- py-oidc-auth -----------------------------------------------------------
 
 # Clone py-oidc-auth into dev-env/py-oidc-auth, if it is not there yet
-[group('server')]
+[group('setup')]
 fetch:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -77,7 +112,7 @@ update-server: fetch
 
 # Keycloak plus the py-oidc-auth dev server on :7777: just dev litestar
 [group('server')]
-dev *args: _server
+dev *args: hooks _server
     @{{ server_just }} dev "$@"
 
 # Run any recipe of the py-oidc-auth checkout: just server test -k exchange
