@@ -45,12 +45,19 @@ from asyncio import sleep as asleep
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
-from typing import Any, ClassVar, List, Optional
+from typing import Any, ClassVar, Iterable, List, Optional, Union
 
 from .backends import PyOIDCAuth
 from .exceptions import AuthError
+from .identity import (
+    INTERACTIVE_GRANTS,
+    AuthIdentity,
+    Grant,
+    normalise_host,
+    normalise_scopes,
+)
 from .schema import DeviceCode, Token
-from .token_store import TokenStore
+from .token_store import StoreEntry, TokenStore
 from .types import TokenResponse
 from .utils import (
     Config,
@@ -147,9 +154,14 @@ class BaseFlow:
     :class:`DeviceFlow` or :class:`CodeFlow` instead, or the
     convenience function :func:`~py_oidc_auth_client.authenticate`.
 
-    Tokens are persisted in a per host JSON store
-    (:class:`~token_store.TokenStore`).  Expired entries are evicted
+    Tokens are persisted in a :class:`~token_store.TokenStore`, keyed by
+    the flow's :attr:`identity`.  Expired entries are evicted
     automatically on every read.
+
+    Without an explicit *identity*, a cached token from either
+    interactive grant is reused: a device flow login serves a later
+    code flow and the other way round, as long as the scopes fit.  A new
+    login is stored under :attr:`identity`.
 
     Parameters
     ----------
@@ -171,6 +183,25 @@ class BaseFlow:
         Ports to try for the local callback server (code flow only).
     timeout : int or None
         HTTP and polling timeout in seconds.
+    scopes : str or iterable of str or None
+        Scopes to request instead of the server's default ones, as a
+        space separated string or a list.  They take part in the cache
+        key, so a narrowly scoped token never stands in for a default
+        login.
+    identity : AuthIdentity or None
+        Exact cache key for the token, instead of the one the flow
+        derives.  Its host must be the flow's host and its grant an
+        interactive one; its scopes are the scopes requested.  Only
+        this entry is read and written.  Mutually exclusive with
+        *scopes*.
+
+    Raises
+    ------
+    TypeError
+        If both *scopes* and *identity* are given.
+    ValueError
+        If *identity* belongs to another host or a non interactive
+        grant.
 
     Examples
     --------
@@ -183,9 +214,19 @@ class BaseFlow:
 
         token = await device.authenticate()
         assert code.token is not None  # same store, same host
+
+    A narrowly scoped login, cached separately from the default one:
+
+    .. code-block:: python
+
+        flow = CodeFlow("https://myapp.example.com", scopes="openid email")
+        token = await flow.authenticate()
+        print(flow.identity.label)
     """
 
     _default_store: ClassVar[Optional[TokenStore]] = None
+    #: Grant of the tokens this flow mints.
+    grant: ClassVar[Grant] = Grant.DEVICE_CODE
 
     def __init__(
         self,
@@ -198,6 +239,8 @@ class BaseFlow:
         device_route: str = "/auth/v2/device",
         redirect_ports: Optional[List[int]] = None,
         timeout: Optional[int] = None,
+        scopes: Optional[Union[str, Iterable[str]]] = None,
+        identity: Optional[AuthIdentity] = None,
     ) -> None:
         config = config or Config(
             host=host,
@@ -208,6 +251,8 @@ class BaseFlow:
         )
         self.provider = PyOIDCAuth(config, timeout=timeout)
         self.store = store or self._get_default_store()
+        self._explicit_identity = identity is not None
+        self._identity = self._resolve_identity(config.host, scopes, identity)
 
     @classmethod
     def _get_default_store(cls) -> TokenStore:
@@ -216,11 +261,87 @@ class BaseFlow:
             cls._default_store = TokenStore()
         return cls._default_store
 
-    # -- Token cache (per host, via store) ------------------------------
+    # -- Identity -------------------------------------------------------
+
+    def _resolve_identity(
+        self,
+        host: str,
+        scopes: Optional[Union[str, Iterable[str]]],
+        identity: Optional[AuthIdentity],
+    ) -> AuthIdentity:
+        """Check a given identity, or derive the flow's own one."""
+        if identity is None:
+            return AuthIdentity(
+                host=host,
+                backend="py-oidc-auth",
+                grant=self.grant,
+                scopes=normalise_scopes(scopes),
+            )
+        if scopes is not None:
+            raise TypeError("Pass either scopes or identity, not both.")
+        if identity.host != normalise_host(host):
+            raise ValueError(
+                f"The identity is for {identity.host}, not for "
+                f"{normalise_host(host)}."
+            )
+        if identity.grant is not None and identity.grant not in INTERACTIVE_GRANTS:
+            raise ValueError(
+                f"A {type(self).__name__} cannot mint tokens for the "
+                f"{identity.grant.display} grant."
+            )
+        return identity
+
+    @property
+    def identity(self) -> AuthIdentity:
+        """The cache key new tokens of this flow are stored under.
+
+        Derived from the host, the flow's grant and the requested
+        scopes, unless an explicit identity was passed.
+        """
+        return self._identity
+
+    # -- Token cache ----------------------------------------------------
+
+    def _cached_entry(self) -> Optional[StoreEntry]:
+        """Find the best cached entry this flow may use.
+
+        With an explicit identity only that entry counts.  Otherwise
+        any interactive entry for the host qualifies whose scopes cover
+        the requested ones.  Without requested scopes only default
+        logins qualify, plus entries migrated from the old host keyed
+        store, which never carried requested scopes.
+        """
+        if self._explicit_identity:
+            return self.store.get_entry(self._identity)
+        wanted = self._identity.scopes
+        for entry in self.store.find(
+            host=self._identity.host,
+            backend="py-oidc-auth",
+            grants=INTERACTIVE_GRANTS,
+            scopes=wanted or None,
+        ):
+            ident = entry.identity
+            if ident.client_id or ident.audience or ident.exchange:
+                continue
+            if not wanted and ident.scopes and ident.grant is not None:
+                continue
+            return entry
+        return None
+
+    def _refresh_target(self, entry: StoreEntry) -> AuthIdentity:
+        """Where a token refreshed from *entry* is stored.
+
+        Under the entry's own identity, so a refresh never duplicates a
+        cached login, except for entries migrated from the old host
+        keyed store: those move to the flow's identity.
+        """
+        if entry.identity.grant is None:
+            return self._identity
+        return entry.identity
 
     @property
     def token(self) -> Optional[Token]:
-        """The cached token for this host, or ``None``.
+        """The cached token this flow would use, or ``None``.
 
         Reads from the :class:`~token_store.TokenStore`.  Expired
         entries are pruned automatically.
@@ -230,29 +351,74 @@ class BaseFlow:
         Token or None
             The cached token, or ``None`` if no valid entry exists.
         """
-        return self.store.get(self.provider.config.host)
+        entry = self._cached_entry()
+        return entry.token if entry else None
+
+    async def _from_cache(self, force: bool = False) -> Optional[Token]:
+        """Return a cached token, refreshing it when needed.
+
+        Returns ``None`` when an interactive login is needed: with
+        *force*, without a usable entry, or when the refresh fails.
+        """
+        if force:
+            return None
+        entry = self._cached_entry()
+        if entry is None:
+            return None
+        strategy = choose_token_strategy(entry.token)
+        if strategy == "use_token":
+            return entry.token
+        if strategy == "refresh_token":
+            try:
+                raw = await self.provider.refresh_token(
+                    entry.token.get("refresh_token", "")
+                )
+                return self._build_token(raw, self._refresh_target(entry))
+            except AuthError:
+                logger.info("Refresh failed, falling back to an interactive login")
+        return None
 
     # -- Token persistence ----------------------------------------------
 
-    def _save_token(self, token: Token) -> Token:
-        """Store the token in the per host cache.
+    def _save_token(
+        self, token: Token, identity: Optional[AuthIdentity] = None
+    ) -> Token:
+        """Store the token under *identity*, by default :attr:`identity`.
 
         Parameters
         ----------
         token : Token
             The token payload to store.
+        identity : AuthIdentity or None
+            Cache key, :attr:`identity` when ``None``.
 
         Returns
         -------
         Token
             The same token, for chaining convenience.
         """
-        self.store.put(self.provider.config.host, token)
+        self.store.put(identity or self._identity, token)
         return token
+
+    @property
+    def _scope_param(self) -> Optional[str]:
+        """The requested scopes as sent to the server, or ``None``."""
+        return " ".join(self._identity.scopes) or None
+
+    def _check_granted_scopes(self, token: Token) -> None:
+        """Log when the server granted fewer scopes than requested."""
+        granted = set(token.get("scope", "").split())
+        missing = set(self._identity.scopes) - granted
+        if granted and missing:
+            logger.warning(
+                "The server did not grant the requested scope(s): %s",
+                " ".join(sorted(missing)),
+            )
 
     def _build_token(
         self,
         response: TokenResponse,
+        identity: Optional[AuthIdentity] = None,
     ) -> Token:
         """Normalise a raw token response into a :class:`Token`.
 
@@ -267,6 +433,8 @@ class BaseFlow:
         ----------
         response : dict
             Raw JSON payload from the token endpoint.
+        identity : AuthIdentity or None
+            Cache key, :attr:`identity` when ``None``.
 
         Returns
         -------
@@ -300,7 +468,7 @@ class BaseFlow:
             scope=response.get("scope", ""),
             headers={"Authorization": f"{token_type} {access_token}"},
         )
-        return self._save_token(token)
+        return self._save_token(token, identity)
 
     # -- Token refresh --------------------------------------------------
 
@@ -329,27 +497,12 @@ class BaseFlow:
             flow = DeviceFlow("https://myapp.example.com")
             new_token = await flow.refresh(old_token["refresh_token"])
         """
-        return self._build_token(await self.provider.refresh_token(refresh_token))
-
-    # -- Strategy -------------------------------------------------------
-
-    def _get_strategy(self, force: bool = False) -> str:
-        """Choose the authentication strategy.
-
-        Parameters
-        ----------
-        force : bool
-            When ``True``, always trigger a fresh interactive login.
-
-        Returns
-        -------
-        str
-            One of ``"use_token"``, ``"refresh_token"``,
-            ``"interactive_auth"``, or ``"fail"``.
-        """
-        if force:
-            return "interactive_auth"
-        return choose_token_strategy(self.token)
+        target = self._identity
+        entry = self._cached_entry()
+        if entry and entry.token.get("refresh_token") == refresh_token:
+            target = self._refresh_target(entry)
+        raw = await self.provider.refresh_token(refresh_token)
+        return self._build_token(raw, target)
 
     # -- Legacy ---------------------------------------------------------
     @classmethod
@@ -501,16 +654,9 @@ class DeviceFlow(BaseFlow):
             flow = DeviceFlow("https://myapp.example.com")
             token = await flow.authenticate()
         """
-        strategy = self._get_strategy(force=force)
-        if strategy == "use_token" and self.token:
-            return self.token
-        if strategy == "refresh_token" and self.token:
-            try:
-                refresh_token: str = self.token.get("refresh_token", "")
-                return await self.refresh(refresh_token)
-            except AuthError:
-                logger.info("Refresh failed, falling back to device flow")
-
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
         return await self._run_device_flow(auto_open=auto_open)
 
     async def get_device_code(self) -> DeviceCode:
@@ -539,7 +685,7 @@ class DeviceFlow(BaseFlow):
             print(f"Go to: {code['uri']}")
             print(f"Code:  {code['user_code']}")
         """
-        init = await self.provider.device_authorization()
+        init = await self.provider.device_authorization(scope=self._scope_param)
         uri = init.get("verification_uri_complete") or init["verification_uri"]
         return DeviceCode(
             uri=uri,
@@ -589,7 +735,9 @@ class DeviceFlow(BaseFlow):
             device_code=device_code,
             base_interval=interval,
         )
-        return self._build_token(response)
+        token = self._build_token(response)
+        self._check_granted_scopes(token)
+        return token
 
     # -- Internals ------------------------------------------------------
 
@@ -599,7 +747,7 @@ class DeviceFlow(BaseFlow):
         auto_open: bool = True,
     ) -> Token:
         """Run the complete device flow with user prompts."""
-        init = await self.provider.device_authorization()
+        init = await self.provider.device_authorization(scope=self._scope_param)
         uri = init.get("verification_uri_complete") or init["verification_uri"]
         user_code = init["user_code"]
 
@@ -624,7 +772,9 @@ class DeviceFlow(BaseFlow):
             device_code=init["device_code"],
             base_interval=int(init.get("interval", 5)),
         )
-        return self._build_token(raw)
+        token = self._build_token(raw)
+        self._check_granted_scopes(token)
+        return token
 
     async def _poll_for_token(
         self,
@@ -716,6 +866,8 @@ class CodeFlow(BaseFlow):
     authenticate : Top level convenience function.
     """
 
+    grant: ClassVar[Grant] = Grant.AUTHORIZATION_CODE
+
     async def authenticate(
         self,
         *,
@@ -748,15 +900,9 @@ class CodeFlow(BaseFlow):
             flow = CodeFlow("https://myapp.example.com")
             token = await flow.authenticate()
         """
-        strategy = self._get_strategy(force=force)
-        if strategy == "use_token" and self.token:
-            return self.token
-        if strategy == "refresh_token" and self.token:
-            try:
-                return await self.refresh(self.token.get("refresh_token", ""))
-            except AuthError:
-                logger.info("Refresh failed, falling back to code flow")
-
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
         return await self._run_code_flow()
 
     # -- Internals ------------------------------------------------------
@@ -823,6 +969,7 @@ class CodeFlow(BaseFlow):
         redirect_uri = REDIRECT_URI.format(port=port)
         login_url = await self.provider.get_authorization_url(
             redirect_uri=redirect_uri,
+            scope=self._scope_param,
         )
         pprint("Opening browser for login: {b}{url}{b_end}\n", url=login_url)
         pprint(
@@ -883,4 +1030,6 @@ class CodeFlow(BaseFlow):
         raw = await self.provider.exchange_authorization_code(
             redirect_uri=redirect_uri, code=code, state=state
         )
-        return self._build_token(raw)
+        token = self._build_token(raw)
+        self._check_granted_scopes(token)
+        return token

@@ -18,6 +18,7 @@ import requests
 from py_oidc_auth_client.exceptions import AuthError
 from py_oidc_auth_client.flows import CodeFlow, DeviceFlow
 from py_oidc_auth_client.token_store import TokenStore
+from py_oidc_auth_client.utils import choose_token_strategy
 
 from .conftest import (
     MockTransport,
@@ -157,7 +158,7 @@ class TestBaseFlowBuildToken:
         token = flow._build_token(raw)
         assert token["refresh_token"] == ""
         assert token["refresh_expires"] == 0
-        assert flow._get_strategy() == "use_token"
+        assert choose_token_strategy(token) == "use_token"
 
 
 # ======================================================================

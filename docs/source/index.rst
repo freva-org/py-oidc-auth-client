@@ -111,8 +111,35 @@ Quick start
     A single ``TokenStore`` can safely hold tokens for multiple hosts, and for several
     identities on the same host, because entries are keyed by an
     :class:`py_oidc_auth_client.AuthIdentity`: the host together with the grant, client,
-    scopes and audience that produced the token. You never build an identity yourself;
-    each flow derives its own.
+    scopes and audience that produced the token. Usually you do not build an identity
+    yourself: each flow derives its own and exposes it as ``flow.identity``.
+
+    Pass ``scopes`` to request only some scopes. Such a token is cached next to the
+    default login and never stands in for it:
+
+    .. code-block:: python
+
+        token = authenticate(host="https://auth.example.org", scopes="openid email")
+
+    To decide yourself which entry a login is stored under, pass an ``identity``. Only
+    that entry is read and written, and its scopes are what the login requests:
+
+    .. code-block:: python
+
+        from py_oidc_auth_client import AuthIdentity, Grant, authenticate
+
+        ident = AuthIdentity(
+            host="https://auth.example.org",
+            backend="py-oidc-auth",
+            grant=Grant.DEVICE_CODE,
+            scopes=("openid", "email"),
+        )
+        token = authenticate(host="https://auth.example.org", store=store, identity=ident)
+        assert store.get(ident) == token
+
+    The identity's grant must be an interactive one. ``authenticate`` may still fall
+    back from the device flow to the code flow; the token is stored under the given
+    identity either way.
 
     Pass ``app_name`` to keep your tokens in their own directory under the platform
     cache (``~/.cache/my-app/tokens`` on Linux):

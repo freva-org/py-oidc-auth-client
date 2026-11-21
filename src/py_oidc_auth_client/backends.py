@@ -86,8 +86,16 @@ class ProviderBackend(ABC):
     timeout: Optional[int] = None
 
     @abstractmethod
-    async def device_authorization(self) -> DeviceAuthorizationResponse:
+    async def device_authorization(
+        self, *, scope: Optional[str] = None
+    ) -> DeviceAuthorizationResponse:
         """Start a device authorization request (RFC 8628).
+
+        Parameters
+        ----------
+        scope : str or None
+            Space separated scopes to request instead of the default
+            ones.  ``None`` requests the default scopes.
 
         Returns
         -------
@@ -108,7 +116,9 @@ class ProviderBackend(ABC):
         """
 
     @abstractmethod
-    async def get_authorization_url(self, *, redirect_uri: str) -> str:
+    async def get_authorization_url(
+        self, *, redirect_uri: str, scope: Optional[str] = None
+    ) -> str:
         """Build the URL that starts the authorization code flow.
 
         Parameters
@@ -117,6 +127,9 @@ class ProviderBackend(ABC):
             Local callback URI the provider redirects back to.  The
             flow picks the port at runtime, so this cannot be derived
             from *config*.
+        scope : str or None
+            Space separated scopes to request instead of the default
+            ones.  ``None`` requests the default scopes.
 
         Returns
         -------
@@ -303,12 +316,23 @@ class PyOIDCAuth(ProviderBackend):
         default_factory=dict, init=False, repr=False
     )
 
-    async def device_authorization(self) -> DeviceAuthorizationResponse:
-        """Start device authorization; return the raw init payload."""
+    async def device_authorization(
+        self, *, scope: Optional[str] = None
+    ) -> DeviceAuthorizationResponse:
+        """Start device authorization; return the raw init payload.
+
+        *scope* is sent as ``scope``.  py-oidc-auth servers that do not
+        accept a scope for device logins ignore it and grant their
+        default scopes.
+        """
         verifier, challenge = pkce_pair()
         payload = await self.post_form(
             self._device_authorization_endpoint,
-            {"code_challenge": challenge, "code_challenge_method": "S256"},
+            {
+                "code_challenge": challenge,
+                "code_challenge_method": "S256",
+                "scope": scope,
+            },
         )
         for k in (
             "device_code",
@@ -366,7 +390,9 @@ class PyOIDCAuth(ProviderBackend):
         }
         return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
 
-    async def get_authorization_url(self, *, redirect_uri: str) -> str:
+    async def get_authorization_url(
+        self, *, redirect_uri: str, scope: Optional[str] = None
+    ) -> str:
         """Build the URL used to start authorization code flow."""
         login_url_base = build_url(self.config.host, self.config.login_route)
         verifier, challenge = pkce_pair()
@@ -380,6 +406,8 @@ class PyOIDCAuth(ProviderBackend):
             "code_challenge_method": "S256",
             "state": state,
         }
+        if scope:
+            params["scope"] = scope
         return f"{login_url_base}?{urllib.parse.urlencode(params)}"
 
     async def get_device_token(self, device_code: str) -> TokenResponse:
