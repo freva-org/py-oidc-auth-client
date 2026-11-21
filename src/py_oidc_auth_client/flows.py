@@ -258,6 +258,10 @@ class BaseFlow:
 
         Handles the various expiry field names that different OIDC
         providers use (``expires``, ``expires_in``, ``exp``, etc.).
+        A response without a refresh token (token exchange, or a
+        provider that does not hand one out) gets an empty
+        ``refresh_token`` and ``refresh_expires`` of ``0``, so the
+        token is never mistaken for a refreshable one.
 
         Parameters
         ----------
@@ -278,17 +282,20 @@ class BaseFlow:
             or response.get("expires_at")
             or now + response.get("expires_in", 180)
         )
-        refresh_expires = int(
-            response.get("refresh_expires")
-            or response.get("refresh_exp")
-            or response.get("refresh_expires_at")
-            or now + response.get("refresh_expires_in", 180)
-        )
+        refresh_token = response.get("refresh_token") or ""
+        refresh_expires = 0
+        if refresh_token:
+            refresh_expires = int(
+                response.get("refresh_expires")
+                or response.get("refresh_exp")
+                or response.get("refresh_expires_at")
+                or now + response.get("refresh_expires_in", 180)
+            )
         token = Token(
             access_token=access_token,
             token_type=token_type,
             expires=expires,
-            refresh_token=response.get("refresh_token", ""),
+            refresh_token=refresh_token,
             refresh_expires=refresh_expires,
             scope=response.get("scope", ""),
             headers={"Authorization": f"{token_type} {access_token}"},
@@ -642,20 +649,25 @@ class DeviceFlow(BaseFlow):
                 try:
                     return await self.provider.get_device_token(device_code)
                 except AuthError as error:
-                    err = (
-                        error.detail.get("error")
-                        if isinstance(error.detail, dict)
-                        else None
-                    )
-                    if err is None or err == "authorization_pending":
+                    err = error.error
+                    if err == "authorization_pending":
                         await asleep(sleep)
-                    elif "slow_down" in err:
+                    elif err == "slow_down":
                         interval += 5
                         await asleep(sleep)
                     elif err in {"expired_token", "access_denied"}:
-                        raise AuthError(f"Device flow failed: {err}")
+                        raise AuthError(
+                            f"Device flow failed: {err}",
+                            detail=error.detail,
+                            status_code=error.status_code,
+                        )
+                    elif err is None and error.status_code >= 500:
+                        # Server or provider briefly unavailable: keep
+                        # polling until the timeout.
+                        logger.debug("Transient error while polling: %s", error)
+                        await asleep(sleep)
                     else:
-                        raise  # pragma: no cover
+                        raise
 
 
 # -----------------------------------------------------------------------

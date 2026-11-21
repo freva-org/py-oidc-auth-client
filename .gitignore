@@ -209,5 +209,6 @@ __marimo__/
 # Dev setup: the py-oidc-auth checkout `just dev` clones (not a submodule;
 # `just update-server` pulls its main)
 /dev-env/py-oidc-auth/
+/dev-env/py-oidc-auth
 coverage_report/
 docs/build/

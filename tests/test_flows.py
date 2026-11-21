@@ -147,6 +147,18 @@ class TestBaseFlowBuildToken:
         assert token["expires"] >= now + 599
         assert token["refresh_expires"] >= now + 7199
 
+    def test_without_refresh_token_is_not_refreshable(self, tmp_store: TokenStore):
+        """Exchanged tokens come without a refresh token."""
+        flow = DeviceFlow("https://a.example.com", store=tmp_store)
+        raw = {
+            "access_token": jwt.encode({"sub": "u"}, secrets.token_urlsafe()),
+            "expires_in": 600,
+        }
+        token = flow._build_token(raw)
+        assert token["refresh_token"] == ""
+        assert token["refresh_expires"] == 0
+        assert flow._get_strategy() == "use_token"
+
 
 # ======================================================================
 # DeviceFlow
@@ -226,6 +238,51 @@ class TestDeviceFlowPoll:
         flow.provider.session = httpx.AsyncClient(transport=transport)
         with pytest.raises(AuthError, match="allotted time"):
             await flow.poll("DEV-123", interval=0)
+
+    @pytest.mark.asyncio
+    async def test_failure_keeps_provider_detail(self, tmp_store: TokenStore):
+        transport = MockTransport().add(
+            400, {"error": "access_denied", "error_description": "User said no"}
+        )
+        flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=5)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
+        with pytest.raises(AuthError, match="User said no") as exc_info:
+            await flow.poll("DEV-123", interval=0)
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.error == "access_denied"
+
+    @pytest.mark.asyncio
+    async def test_legacy_server_pending_text(self, tmp_store: TokenStore):
+        """Older servers embed the code in a free text detail."""
+        transport = MockTransport()
+        transport.add(
+            400,
+            {"detail": 'Upstream OIDC error: {"error":"authorization_pending"}'},
+        )
+        transport.add(200, make_raw_token_response())
+        flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=10)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
+        token = await flow.poll("DEV-123", interval=0)
+        assert "access_token" in token
+
+    @pytest.mark.asyncio
+    async def test_transient_server_error_keeps_polling(self, tmp_store: TokenStore):
+        transport = MockTransport()
+        transport.add(503, {"detail": "OIDC provider unavailable"})
+        transport.add(200, make_raw_token_response())
+        flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=10)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
+        token = await flow.poll("DEV-123", interval=0)
+        assert "access_token" in token
+
+    @pytest.mark.asyncio
+    async def test_unknown_client_error_raises_at_once(self, tmp_store: TokenStore):
+        transport = MockTransport().add(400, {"error": "invalid_grant"})
+        flow = DeviceFlow("https://a.example.com", store=tmp_store, timeout=30)
+        flow.provider.session = httpx.AsyncClient(transport=transport)
+        with pytest.raises(AuthError, match="invalid_grant"):
+            await flow.poll("DEV-123", interval=0)
+        assert len(transport.requests) == 1
 
     @pytest.mark.asyncio
     async def test_slow_down_handled(self, tmp_store: TokenStore):

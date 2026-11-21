@@ -26,6 +26,8 @@ from .exceptions import AuthError
 from .types import DeviceAuthorizationResponse, JSONResponse, TokenResponse
 from .utils import Config, build_url
 
+GRANT_TYPE_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code"
+
 OIDCResponseType = TypeVar(
     "OIDCResponseType",
     TokenResponse,
@@ -340,23 +342,30 @@ class PyOIDCAuth(ProviderBackend):
         return f"{login_url_base}?{urllib.parse.urlencode(params)}"
 
     async def get_device_token(self, device_code: str) -> TokenResponse:
-        """Query a device token."""
-        return cast(
-            TokenResponse,
-            await self.post_form(
-                self._token_endpoint, data={"device-code": device_code}
-            ),
-        )
+        """Query a device token.
+
+        Sends the standard ``device_code`` field and the older
+        ``device-code`` name, which older py-oidc-auth servers expect.
+        """
+        data = {
+            "grant_type": GRANT_TYPE_DEVICE_CODE,
+            "device_code": device_code,
+            "device-code": device_code,
+        }
+        return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
 
     async def refresh_token(self, token: str) -> TokenResponse:
-        """Refresh a bearer token with help of a refresh token."""
-        return cast(
-            TokenResponse,
-            await self.post_form(
-                self._token_endpoint,
-                data={"refresh-token": token},
-            ),
-        )
+        """Refresh a bearer token with help of a refresh token.
+
+        Sends the standard ``refresh_token`` field and the older
+        ``refresh-token`` name, which older py-oidc-auth servers expect.
+        """
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": token,
+            "refresh-token": token,
+        }
+        return cast(TokenResponse, await self.post_form(self._token_endpoint, data))
 
     # -- Internals -------------------------------------------------------------
 

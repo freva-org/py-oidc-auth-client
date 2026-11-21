@@ -85,7 +85,7 @@ from .schema import DeviceCode, Token
 from .token_store import StoreEntry, TokenStore
 from .utils import Config
 
-__version__ = "2609.0.0"
+__version__ = "2611.0.0"
 
 
 def authenticate(

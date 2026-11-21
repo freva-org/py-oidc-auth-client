@@ -101,6 +101,12 @@ class TestIsTokenValid:
         del token["refresh_token"]
         assert is_token_valid(token, "refresh_token") is False
 
+    def test_empty_refresh_token(self):
+        """An empty refresh token is no refresh token, whatever its expiry."""
+        token = make_token(refresh_expires_in=3600)
+        token["refresh_token"] = ""
+        assert is_token_valid(token, "refresh_token") is False
+
     def test_buffer_zone(self):
         """Token expiring within the buffer (60s) is treated as invalid."""
         assert is_token_valid(make_token(expires_in=30), "access_token") is False

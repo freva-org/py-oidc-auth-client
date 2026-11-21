@@ -281,7 +281,7 @@ def is_token_valid(
         }[token_type],
     )
     return (
-        token_type in token
+        bool(token.get(token_type))
         and exp_key in token
         and (time.time() + TOKEN_EXPIRY_BUFFER < token[exp_key])
     )
