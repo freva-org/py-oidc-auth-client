@@ -3,7 +3,23 @@ What's new
 
 This document highlights major changes and additions across releases.
 
-v209.0.0
+v2611.0.0
+----------
+* Tokens without a refresh token, such as exchanged tokens, are no longer
+  treated as refreshable for three minutes: ``refresh_expires`` is ``0``.
+* Device flow polling stops at once on a real error instead of waiting
+  for the timeout.  Only ``authorization_pending``, ``slow_down`` and
+  server side (5xx) errors keep it polling.  Error codes of older
+  py-oidc-auth servers, which only sent a free text ``detail``, are
+  still recognised.
+* :class:`~py_oidc_auth_client.exceptions.AuthError` has a new ``error``
+  attribute with the OAuth error code, and its message shows the
+  provider's ``error_description``.
+* Token requests send ``grant_type`` and the standard ``device_code`` and
+  ``refresh_token`` fields, next to the older ``device-code`` and
+  ``refresh-token`` names.
+
+v2609.0.0
 ---------
 * Tokens are now cached per authentication identity rather than per host.
   An identity covers the host together with the grant, client, scopes and

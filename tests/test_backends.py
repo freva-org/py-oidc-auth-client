@@ -182,7 +182,11 @@ class TestPyOIDCAuth:
         backend = _backend(transport=transport)
         result = await backend.get_device_token("DEV-1")
         assert "access_token" in result
-        assert _form(transport.requests[0]) == {"device-code": ["DEV-1"]}
+        assert _form(transport.requests[0]) == {
+            "grant_type": ["urn:ietf:params:oauth:grant-type:device_code"],
+            "device_code": ["DEV-1"],
+            "device-code": ["DEV-1"],
+        }
 
     @pytest.mark.asyncio
     async def test_refresh_token(self):
@@ -190,7 +194,11 @@ class TestPyOIDCAuth:
         backend = _backend(transport=transport)
         result = await backend.refresh_token("REFRESH-1")
         assert "access_token" in result
-        assert _form(transport.requests[0]) == {"refresh-token": ["REFRESH-1"]}
+        assert _form(transport.requests[0]) == {
+            "grant_type": ["refresh_token"],
+            "refresh_token": ["REFRESH-1"],
+            "refresh-token": ["REFRESH-1"],
+        }
 
     def test_custom_routes_are_used(self):
         config = Config(
