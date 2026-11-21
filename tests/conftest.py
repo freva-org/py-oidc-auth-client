@@ -9,6 +9,8 @@ requests against it — no httpx mocking required for the happy paths.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import socket
 import threading
@@ -171,6 +173,19 @@ class MockTransport(httpx.AsyncBaseTransport):
 # ---------------------------------------------------------------------------
 
 
+def s256(verifier: str) -> str:
+    """The PKCE S256 challenge of *verifier*."""
+    digest = hashlib.sha256(verifier.encode()).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+
+
+def _verifier_ok(challenge: Optional[str], verifier: Optional[str]) -> bool:
+    """Check a verifier like the IdP would: only when a challenge was set."""
+    if challenge is None:
+        return True
+    return verifier is not None and s256(verifier) == challenge
+
+
 def create_test_app() -> FastAPI:
     """Create a FastAPI app that simulates OIDC provider endpoints.
 
@@ -182,6 +197,10 @@ def create_test_app() -> FastAPI:
         app.state.device_codes: Dict[str, Dict[str, Any]] = {}
         app.state.valid_refresh_tokens: set = {"test_refresh_token"}
         app.state.valid_auth_codes: set = set()
+        # code -> PKCE challenge it was issued for (None: no PKCE)
+        app.state.code_challenges: Dict[str, Optional[str]] = {}
+        # Behave like a server without client side PKCE support
+        app.state.legacy_pkce: bool = False
         app.state.fail_device_start: bool = False
         app.state.pending_polls: int = 1
         yield
@@ -196,11 +215,14 @@ def create_test_app() -> FastAPI:
                 {"error": "unsupported_grant_type"},
                 status_code=503,
             )
+        form = await request.form()
         device_code = f"DEV-{uuid.uuid4().hex[:8]}"
         user_code = f"{uuid.uuid4().hex[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
+        challenge = None if app.state.legacy_pkce else form.get("code_challenge")
         app.state.device_codes[device_code] = {
             "user_code": user_code,
             "polls_remaining": app.state.pending_polls,
+            "challenge": challenge,
         }
         base = str(request.base_url).rstrip("/")
         return JSONResponse(
@@ -219,16 +241,22 @@ def create_test_app() -> FastAPI:
     @app.post("/auth/v2/token")
     async def token_exchange(request: Request) -> JSONResponse:
         form = await request.form()
-        device_code = form.get("device-code")
-        refresh_token = form.get("refresh-token")
+        device_code = form.get("device_code") or form.get("device-code")
+        refresh_token = form.get("refresh_token") or form.get("refresh-token")
         grant_type = form.get("grant_type")
         code = form.get("code")
+        verifier = form.get("code_verifier")
 
         if device_code:
             entry = app.state.device_codes.get(device_code)
             if entry is None:
                 return JSONResponse(
                     {"error": "invalid_grant"},
+                    status_code=400,
+                )
+            if not _verifier_ok(entry["challenge"], verifier):
+                return JSONResponse(
+                    {"error": "invalid_grant", "error_description": "PKCE"},
                     status_code=400,
                 )
             if entry["polls_remaining"] > 0:
@@ -259,6 +287,11 @@ def create_test_app() -> FastAPI:
                     {"error": "invalid_grant"},
                     status_code=400,
                 )
+            if not _verifier_ok(app.state.code_challenges.get(code), verifier):
+                return JSONResponse(
+                    {"error": "invalid_grant", "error_description": "PKCE"},
+                    status_code=400,
+                )
             app.state.valid_auth_codes.discard(code)
             resp = make_raw_token_response()
             app.state.valid_refresh_tokens.add(resp["refresh_token"])
@@ -276,12 +309,24 @@ def create_test_app() -> FastAPI:
         redirect_uri: str = Query(...),
         offline_access: str = Query("false"),
         prompt: str = Query("consent"),
+        code_challenge: Optional[str] = Query(None),
+        state: Optional[str] = Query(None),
     ) -> RedirectResponse:
         code = f"CODE-{uuid.uuid4().hex[:8]}"
         app.state.valid_auth_codes.add(code)
+        if app.state.legacy_pkce:
+            # Old servers ignore the client's challenge and state, and
+            # carry their own verifier in state.
+            verifier = secrets.token_urlsafe(32)
+            code_challenge = s256(verifier)
+            state = f"{uuid.uuid4().hex}|{redirect_uri}|{verifier}"
+        app.state.code_challenges[code] = code_challenge
+        query = {"code": code}
+        if state:
+            query["state"] = state
         sep = "&" if "?" in redirect_uri else "?"
         return RedirectResponse(
-            f"{redirect_uri}{sep}{urlencode({'code': code})}",
+            f"{redirect_uri}{sep}{urlencode(query)}",
             status_code=302,
         )
 
@@ -302,6 +347,8 @@ def create_test_app() -> FastAPI:
         body = await request.json()
         if "fail_device_start" in body:
             app.state.fail_device_start = body["fail_device_start"]
+        if "legacy_pkce" in body:
+            app.state.legacy_pkce = body["legacy_pkce"]
         if "pending_polls" in body:
             app.state.pending_polls = body["pending_polls"]
         if "add_refresh_token" in body:
@@ -377,3 +424,11 @@ def configure_server(test_server: str):
         resp.raise_for_status()
 
     return _configure
+
+
+@pytest.fixture()
+def legacy_pkce_server(test_server: str, configure_server):
+    """The test server acting like a server without client side PKCE."""
+    configure_server(legacy_pkce=True)
+    yield test_server
+    configure_server(legacy_pkce=False)

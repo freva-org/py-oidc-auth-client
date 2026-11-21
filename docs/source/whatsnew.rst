@@ -18,6 +18,13 @@ v2611.0.0
 * Token requests send ``grant_type`` and the standard ``device_code`` and
   ``refresh_token`` fields, next to the older ``device-code`` and
   ``refresh-token`` names.
+* The code flow and the device flow use client side PKCE: the verifier
+  never leaves the client, and only the S256 challenge is sent to the
+  server.  This works with servers that set ``require_client_pkce``.
+  Servers that ignore the challenge keep working: for the code flow the
+  verifier they put into ``state`` is used, as before.
+* The code flow sends its own ``state`` and refuses callbacks that do not
+  carry it.
 
 v2609.0.0
 ---------

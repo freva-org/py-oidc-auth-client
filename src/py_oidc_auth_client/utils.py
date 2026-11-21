@@ -5,7 +5,10 @@ Utilities
 Configuration, token persistence, and environment detection helpers.
 """
 
+import base64
+import hashlib
 import os
+import secrets
 import sys
 import time
 from contextlib import contextmanager
@@ -16,6 +19,7 @@ from typing import (
     List,
     Literal,
     Optional,
+    Tuple,
     Union,
     cast,
 )
@@ -29,6 +33,21 @@ from .schema import Token
 TOKEN_EXPIRY_BUFFER = 60  # seconds
 TOKEN_ENV_VAR = "OIDC_TOKEN_FILE"
 DEFAULT_APP_NAME = "py-oidc-auth"
+
+
+def pkce_pair() -> Tuple[str, str]:
+    """Create a PKCE code verifier and its S256 challenge (RFC 7636).
+
+    Returns
+    -------
+    tuple of str
+        ``(code_verifier, code_challenge)``.  The verifier stays with
+        the client; the challenge goes to the authorization request.
+    """
+    verifier = secrets.token_urlsafe(64)
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return verifier, challenge
 
 
 def pprint(text: str, **args: Union[str, int]) -> None:

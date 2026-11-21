@@ -680,7 +680,9 @@ class CodeFlow(BaseFlow):
 
     Opens the provider's login page in a local browser, starts a
     temporary HTTP server to capture the callback, and exchanges
-    the authorization code for tokens.
+    the authorization code for tokens.  The PKCE verifier is made and
+    kept by the client, and a callback whose ``state`` does not match
+    the login is refused.
 
     Best suited for desktop and local development environments where
     a browser is available on the same machine.
