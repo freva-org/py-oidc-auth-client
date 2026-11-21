@@ -198,3 +198,60 @@ The documentation is organised around a few task-oriented entry points:
 ## Contributing
 
 Contributions are welcome. Please open an issue to discuss larger changes before submitting a pull request.
+
+### Development
+
+Development runs in containers, driven by [just](https://just.systems). You need
+`just`, `git` and docker (or podman with `COMPOSE=podman-compose`); no local Python
+environment is involved.
+
+```console
+just test                 # the tests with coverage, on Python 3.13
+just test -k exchange     # or any pytest arguments
+PY=3.11 just test         # another Python version
+just test-all             # every supported version
+just lint                 # import order, style, spelling, docstrings, security
+just types                # mypy
+just docs                 # the docs, into docs/build/html
+just pkg                  # packaging metadata and wheel
+just check                # all of the above, as CI runs them
+```
+
+The first run builds a dev image per Python version with the dependencies installed.
+The checkout is mounted into it, so edits apply without a rebuild, and a change to
+`pyproject.toml` gets a fresh image. `just setup` does that up front, clones
+py-oidc-auth (see below) and turns on the git hooks.
+
+#### Git hooks
+
+`just setup` and `just dev` turn on the hooks in `.githooks`:
+
+* **pre-commit** runs `lint` and `types` (a few seconds), only for commits that touch
+  `src/`, `tests/` or `pyproject.toml`. It checks the working tree, unstaged edits
+  included. If it fails on formatting, `just fmt` fixes it.
+* **pre-push** runs what CI runs: `lint`, `types`, `docs`, `pkg` and the tests on
+  `$PY` (under a minute). `PREPUSH_ALL=1 git push` tests every Python version.
+
+Both need docker or podman running. Skip them once with `--no-verify`, for a whole
+shell with `SKIP_HOOKS=1`, or turn them off with `just hooks-off`.
+
+To work on client and server together, `just dev` clones
+[py-oidc-auth](https://github.com/freva-org/py-oidc-auth) into `dev-env/py-oidc-auth`
+(untracked, not a submodule) and runs its own `just dev`: Keycloak on
+`http://localhost:8080` and a py-oidc-auth server on `http://localhost:7777`, with its
+auth routes under `/api/test`. Point the client at it from another terminal and log in
+as `$USER` / `secret`:
+
+```console
+just dev                                   # terminal 1: Keycloak and the server
+just cli http://localhost:7777/api/test    # terminal 2: log in with the client
+just server test -k exchange               # any py-oidc-auth recipe, in its checkout
+just update-server                         # git pull origin main in the checkout
+just down                                  # stop the server stack
+```
+
+`just update-server` only fast-forwards the checkout while it is on `main`; on another
+branch it leaves it alone, so you can work on a server branch there. Nothing is pushed
+from these recipes.
+
+Releases are tagged with `just release`.

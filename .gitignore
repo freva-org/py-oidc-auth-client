@@ -38,7 +38,6 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
-.tox/
 .nox/
 .coverage
 .coverage.*
@@ -206,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Dev setup: the py-oidc-auth checkout `just dev` clones (not a submodule;
+# `just update-server` pulls its main)
+/dev-env/py-oidc-auth/
+coverage_report/
+docs/build/

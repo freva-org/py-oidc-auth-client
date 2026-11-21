@@ -1,0 +1,11 @@
+# The dev image only copies pyproject.toml, README.md, LICENSE and src/.
+# Keep everything else, above all the py-oidc-auth checkout, out of the
+# build context.
+.git
+dev-env/py-oidc-auth
+docs/build
+coverage_report
+**/__pycache__
+**/.mypy_cache
+**/.pytest_cache
+dist
