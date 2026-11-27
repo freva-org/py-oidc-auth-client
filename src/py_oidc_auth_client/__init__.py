@@ -76,6 +76,46 @@ explicit ``identity``:
 For finer control over individual flows, see :class:`~flows.DeviceFlow`
 and :class:`~flows.CodeFlow`.
 
+Plain OpenID Connect providers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Without a py-oidc-auth server in between, log in at the provider (Keycloak,
+...) directly.  :meth:`Config.from_discovery` takes the discovery URL or the
+issuer, and the endpoints come from the discovery document:
+
+.. code-block:: python
+
+    from py_oidc_auth_client import Config, authenticate
+
+    config = Config.from_discovery(
+        "https://kc.example.org/realms/freva", client_id="freva-cli"
+    )
+    token = authenticate(config=config)
+
+Token exchange
+~~~~~~~~~~~~~~
+
+:func:`exchange` turns a token into another one (RFC 8693): one for
+another audience or with fewer scopes, or one of a trusting peer
+server.  By default the subject is your login on the same server:
+
+.. code-block:: python
+
+    from py_oidc_auth_client import exchange
+
+    token = exchange(host="https://myapp.example.com", audience="s3-gateway")
+
+The subject can also be a flow, a cached identity or a token string, and
+the exchanging server another one than the subject's:
+
+.. code-block:: python
+
+    from py_oidc_auth_client import exchange
+    from py_oidc_auth_client.flows import DeviceFlow
+
+    login = DeviceFlow("https://freva.dkrz.de")
+    token = exchange(host="https://freva.example.org", subject=login)
+
 CLI usage
 ~~~~~~~~~
 
@@ -96,17 +136,39 @@ import asyncio
 from typing import Iterable, List, Optional, Union
 
 from .exceptions import AuthError
-from .flows import BaseFlow, CodeFlow, DeviceFlow
+from .flows import (
+    BaseFlow,
+    ClientCredentialsFlow,
+    CodeFlow,
+    DeviceFlow,
+    ExchangeFlow,
+    LoginFlow,
+    Subject,
+)
 from .identity import AuthIdentity, Grant
 from .schema import DeviceCode, Token
 from .token_store import StoreEntry, TokenStore
+from .types import (
+    TOKEN_TYPE_ACCESS,
+    TOKEN_TYPE_ID,
+    TOKEN_TYPE_JWT,
+    TOKEN_TYPE_REFRESH,
+    TOKEN_TYPES,
+)
 from .utils import Config
 
 __version__ = "2611.0.0"
 
 
+def _config(host: str, config: Optional[Config]) -> Optional[Config]:
+    """Check that a server is named one way or the other."""
+    if not host and config is None:
+        raise ValueError("Pass a host or a config.")
+    return config
+
+
 def authenticate(
-    host: str,
+    host: str = "",
     *,
     login_route: str = "/auth/v2/login",
     token_route: str = "/auth/v2/token",
@@ -118,6 +180,7 @@ def authenticate(
     timeout: Optional[int] = 30,
     scopes: Optional[Union[str, Iterable[str]]] = None,
     identity: Optional[AuthIdentity] = None,
+    config: Optional[Config] = None,
 ) -> Token:
     """Authenticate to an OIDC protected server and return a token.
 
@@ -173,6 +236,10 @@ def authenticate(
         interactive one (device code or authorization code; either
         flow may produce the token), and its scopes are requested from
         the server.  Mutually exclusive with *scopes*.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
 
     Returns
     -------
@@ -263,12 +330,13 @@ def authenticate(
             timeout=timeout,
             scopes=scopes,
             identity=identity,
+            config=config,
         )
     )
 
 
 async def authenticate_async(
-    host: str,
+    host: str = "",
     *,
     login_route: str = "/auth/v2/login",
     token_route: str = "/auth/v2/token",
@@ -280,6 +348,7 @@ async def authenticate_async(
     timeout: Optional[int] = 30,
     scopes: Optional[Union[str, Iterable[str]]] = None,
     identity: Optional[AuthIdentity] = None,
+    config: Optional[Config] = None,
 ) -> Token:
     """Async version of :func:`authenticate`.
 
@@ -313,6 +382,10 @@ async def authenticate_async(
         Scopes to request instead of the server's default ones.
     identity : AuthIdentity or None
         Exact cache key for the token.  See :func:`authenticate`.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
 
     Returns
     -------
@@ -339,52 +412,220 @@ async def authenticate_async(
     --------
     authenticate : Synchronous wrapper for non async code.
     """
-    effective_store = store or TokenStore(app_name=app_name)
-    # Try device flow first (works headless and interactively)
-    device = DeviceFlow(
+    flow = LoginFlow(
         host,
+        config=_config(host, config),
         redirect_ports=redirect_ports,
         login_route=login_route,
         device_route=device_route,
         token_route=token_route,
-        store=effective_store,
+        store=store or TokenStore(app_name=app_name),
         timeout=timeout,
         scopes=scopes,
         identity=identity,
     )
-    try:
-        return await device.authenticate(force=force)
-    except AuthError as device_error:
-        if device_error.status_code == 503:
-            # Server does not support device flow, fall back to code flow
-            code = CodeFlow(
-                host,
-                redirect_ports=redirect_ports,
-                login_route=login_route,
-                device_route=device_route,
-                token_route=token_route,
-                store=effective_store,
-                timeout=timeout,
-                scopes=scopes,
-                identity=identity,
-            )
-            return await code.authenticate(force=force)
-        raise
+    return await flow.authenticate(force=force)
+
+
+def exchange(
+    host: str = "",
+    *,
+    subject: Optional[Subject] = None,
+    audience: Optional[str] = None,
+    scopes: Optional[Union[str, Iterable[str]]] = None,
+    resource: Optional[str] = None,
+    requested_token_type: Optional[str] = None,
+    subject_token_type: str = TOKEN_TYPE_ACCESS,
+    token_route: str = "/auth/v2/token",
+    store: Optional[TokenStore] = None,
+    app_name: str = "py-oidc-auth",
+    force: bool = False,
+    timeout: Optional[int] = 30,
+    config: Optional[Config] = None,
+) -> Token:
+    """Exchange a token for another one (RFC 8693) and return it.
+
+    The exchanged token is cached.  While it is valid it is returned
+    as is; once it expires a fresh subject token is obtained and
+    exchanged again, since exchanged tokens usually have no refresh
+    token.
+
+    Parameters
+    ----------
+    host : str
+        Base URL of the server that performs the exchange.  May be left
+        out when *config* is given.
+    subject : DeviceFlow or CodeFlow or ExchangeFlow or AuthIdentity or str
+        Where the subject token comes from: a flow, which is asked for
+        a valid token first (and may log in); the identity of a cached
+        token; or a token string.  ``None`` uses a login (device, else code flow) on
+        *host*.
+    audience : str or None
+        Service the new token is for.
+    scopes : str or iterable of str or None
+        Scopes wanted for the new token.
+    resource : str or None
+        URI of the service the new token is for.
+    requested_token_type : str or None
+        RFC 8693 type of the token wanted, as a URN such as
+        :data:`TOKEN_TYPE_ACCESS` or a short name (``access``,
+        ``refresh``, ``id``, ``jwt``).  ``None`` leaves it to the server.
+    subject_token_type : str
+        RFC 8693 type of the subject token.
+    token_route : str
+        Server side route of the token endpoint.
+    store : TokenStore or None
+        Token store for the exchanged token and the subject's token.
+    app_name : str
+        Application name for the cache directory.  Only used when
+        *store* is ``None``.
+    force : bool
+        Exchange again even if a valid exchanged token is cached.
+    timeout : int or None
+        HTTP timeout in seconds.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
+
+    Returns
+    -------
+    Token
+        The exchanged token.  ``issued_token_type`` says what it is.
+
+    Raises
+    ------
+    AuthError
+        If no subject token can be obtained or the server refuses the
+        exchange (``error`` is e.g. ``invalid_target``).
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from py_oidc_auth_client import exchange
+
+        token = exchange("https://myapp.example.com", audience="s3-gateway")
+    """
+    return asyncio.run(
+        exchange_async(
+            host,
+            subject=subject,
+            audience=audience,
+            scopes=scopes,
+            resource=resource,
+            requested_token_type=requested_token_type,
+            subject_token_type=subject_token_type,
+            token_route=token_route,
+            store=store,
+            app_name=app_name,
+            force=force,
+            timeout=timeout,
+            config=config,
+        )
+    )
+
+
+async def exchange_async(
+    host: str = "",
+    *,
+    subject: Optional[Subject] = None,
+    audience: Optional[str] = None,
+    scopes: Optional[Union[str, Iterable[str]]] = None,
+    resource: Optional[str] = None,
+    requested_token_type: Optional[str] = None,
+    subject_token_type: str = TOKEN_TYPE_ACCESS,
+    token_route: str = "/auth/v2/token",
+    store: Optional[TokenStore] = None,
+    app_name: str = "py-oidc-auth",
+    force: bool = False,
+    timeout: Optional[int] = 30,
+    config: Optional[Config] = None,
+) -> Token:
+    """Async version of :func:`exchange`.
+
+    Parameters
+    ----------
+    host : str
+        Base URL of the server that performs the exchange.  May be left
+        out when *config* is given.
+    subject : DeviceFlow or CodeFlow or ExchangeFlow or AuthIdentity or str
+        Where the subject token comes from.  See :func:`exchange`.
+    audience : str or None
+        Service the new token is for.
+    scopes : str or iterable of str or None
+        Scopes wanted for the new token.
+    resource : str or None
+        URI of the service the new token is for.
+    requested_token_type : str or None
+        RFC 8693 type of the token wanted.
+    subject_token_type : str
+        RFC 8693 type of the subject token.
+    token_route : str
+        Server side route of the token endpoint.
+    store : TokenStore or None
+        Token store.  See :func:`exchange`.
+    app_name : str
+        Application name for the cache directory.
+    force : bool
+        Exchange again even if a valid exchanged token is cached.
+    timeout : int or None
+        HTTP timeout in seconds.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
+
+    Returns
+    -------
+    Token
+        The exchanged token.
+
+    Raises
+    ------
+    AuthError
+        If no subject token can be obtained or the exchange fails.
+    """
+    flow = ExchangeFlow(
+        host,
+        config=_config(host, config),
+        subject=subject,
+        audience=audience,
+        scopes=scopes,
+        resource=resource,
+        requested_token_type=requested_token_type,
+        subject_token_type=subject_token_type,
+        token_route=token_route,
+        store=store or TokenStore(app_name=app_name),
+        timeout=timeout,
+    )
+    return await flow.authenticate(force=force)
 
 
 __all__ = [
     "AuthError",
     "AuthIdentity",
     "BaseFlow",
+    "ClientCredentialsFlow",
     "CodeFlow",
     "Config",
     "DeviceCode",
     "DeviceFlow",
+    "ExchangeFlow",
     "Grant",
+    "LoginFlow",
     "StoreEntry",
+    "Subject",
+    "TOKEN_TYPE_ACCESS",
+    "TOKEN_TYPE_ID",
+    "TOKEN_TYPE_JWT",
+    "TOKEN_TYPE_REFRESH",
+    "TOKEN_TYPES",
     "Token",
     "TokenStore",
     "authenticate",
     "authenticate_async",
+    "exchange",
+    "exchange_async",
     "__version__",
 ]

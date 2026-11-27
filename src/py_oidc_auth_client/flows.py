@@ -4,14 +4,17 @@ Authentication Flows
 
 OIDC/OAuth 2.0 client side authentication flows.
 
-The module provides three classes arranged in an inheritance hierarchy:
+The module provides six classes arranged in an inheritance hierarchy:
 
 .. code-block:: text
 
-    BaseFlow          (token lifecycle, persistence, refresh)
+    BaseFlow            (token lifecycle, persistence, refresh)
       |
-      +-- DeviceFlow  (OAuth 2.0 Device Authorization Grant)
-      +-- CodeFlow    (OAuth 2.0 Authorization Code Grant with PKCE)
+      +-- DeviceFlow    (OAuth 2.0 Device Authorization Grant)
+      +-- CodeFlow      (OAuth 2.0 Authorization Code Grant with PKCE)
+      +-- LoginFlow     (device flow, falling back to the code flow)
+      +-- ClientCredentialsFlow  (OAuth 2.0 Client Credentials Grant)
+      +-- ExchangeFlow  (OAuth 2.0 Token Exchange, RFC 8693)
 
 All flow classes share a process wide token store via :class:`BaseFlow`
 so that repeated calls reuse existing tokens when possible.
@@ -33,7 +36,11 @@ module are useful when you need explicit control over the flow.
     token = await flow.poll(code["device_code"], code["interval"])
 """
 
+import base64
+import binascii
 import datetime
+import hashlib
+import json
 import logging
 import random
 import socket
@@ -42,12 +49,13 @@ import urllib.parse
 import warnings
 import webbrowser
 from asyncio import sleep as asleep
+from dataclasses import replace
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
-from typing import Any, ClassVar, Iterable, List, Optional, Union
+from typing import Any, ClassVar, Dict, Iterable, List, Optional, Union
 
-from .backends import PyOIDCAuth
+from .backends import make_backend
 from .exceptions import AuthError
 from .identity import (
     INTERACTIVE_GRANTS,
@@ -58,11 +66,12 @@ from .identity import (
 )
 from .schema import DeviceCode, Token
 from .token_store import StoreEntry, TokenStore
-from .types import TokenResponse
+from .types import TOKEN_TYPE_ACCESS, TokenResponse, token_type_urn
 from .utils import (
     Config,
     choose_token_strategy,
     clock,
+    is_token_valid,
     pprint,
 )
 
@@ -249,7 +258,7 @@ class BaseFlow:
             device_route=device_route,
             redirect_ports=redirect_ports or [53100, 53101, 53102, 53103, 53104, 53105],
         )
-        self.provider = PyOIDCAuth(config, timeout=timeout)
+        self.provider = make_backend(config, timeout=timeout)
         self.store = store or self._get_default_store()
         self._explicit_identity = identity is not None
         self._identity = self._resolve_identity(config.host, scopes, identity)
@@ -271,18 +280,12 @@ class BaseFlow:
     ) -> AuthIdentity:
         """Check a given identity, or derive the flow's own one."""
         if identity is None:
-            return AuthIdentity(
-                host=host,
-                backend="py-oidc-auth",
-                grant=self.grant,
-                scopes=normalise_scopes(scopes),
-            )
+            return self._base_identity(self.grant, scopes)
         if scopes is not None:
             raise TypeError("Pass either scopes or identity, not both.")
-        if identity.host != normalise_host(host):
+        if identity.host != self._host_key:
             raise ValueError(
-                f"The identity is for {identity.host}, not for "
-                f"{normalise_host(host)}."
+                f"The identity is for {identity.host}, not for {self._host_key}."
             )
         if identity.grant is not None and identity.grant not in INTERACTIVE_GRANTS:
             raise ValueError(
@@ -290,6 +293,29 @@ class BaseFlow:
                 f"{identity.grant.display} grant."
             )
         return identity
+
+    @property
+    def _host_key(self) -> str:
+        """The configured host as identities hold it."""
+        config = self.provider.config
+        return normalise_host(config.host, keep_path=config.backend == "oidc")
+
+    def _base_identity(
+        self,
+        grant: Optional[Grant],
+        scopes: Optional[Union[str, Iterable[str]]] = None,
+    ) -> AuthIdentity:
+        """Build an identity for this flow's provider and client."""
+        config = self.provider.config
+        oidc = config.backend == "oidc"
+        return AuthIdentity(
+            host=config.host,
+            backend=config.backend,
+            grant=grant,
+            client_id=config.effective_client_id if oidc else None,
+            scopes=normalise_scopes(scopes),
+            client_auth=config.client_auth,
+        )
 
     @property
     def identity(self) -> AuthIdentity:
@@ -316,12 +342,16 @@ class BaseFlow:
         wanted = self._identity.scopes
         for entry in self.store.find(
             host=self._identity.host,
-            backend="py-oidc-auth",
+            backend=self._identity.backend,
             grants=INTERACTIVE_GRANTS,
             scopes=wanted or None,
         ):
             ident = entry.identity
-            if ident.client_id or ident.audience or ident.exchange:
+            if ident.client_id != self._identity.client_id:
+                continue
+            if ident.client_auth != self._identity.client_auth:
+                continue
+            if ident.audience or ident.exchange:
                 continue
             if not wanted and ident.scopes and ident.grant is not None:
                 continue
@@ -468,7 +498,18 @@ class BaseFlow:
             scope=response.get("scope", ""),
             headers={"Authorization": f"{token_type} {access_token}"},
         )
+        if response.get("issued_token_type"):
+            token["issued_token_type"] = response["issued_token_type"]
         return self._save_token(token, identity)
+
+    # -- Authentication -------------------------------------------------
+
+    async def authenticate(self, *, force: bool = False) -> Token:
+        """Return a valid token, from the cache or a new login.
+
+        Implemented by the concrete flows.
+        """
+        raise NotImplementedError  # pragma: no cover
 
     # -- Token refresh --------------------------------------------------
 
@@ -1033,3 +1074,486 @@ class CodeFlow(BaseFlow):
         token = self._build_token(raw)
         self._check_granted_scopes(token)
         return token
+
+
+# -----------------------------------------------------------------------
+# LoginFlow
+# -----------------------------------------------------------------------
+
+#: HTTP statuses that mean "this server has no device flow".
+_NO_DEVICE_STATUSES = frozenset({404, 405, 501, 503})
+#: OAuth errors that mean "this client may not use the device flow".
+_NO_DEVICE_ERRORS = frozenset({"unauthorized_client", "unsupported_grant_type"})
+
+
+def device_flow_unavailable(error: AuthError) -> bool:
+    """Tell whether *error* means the device flow is not offered at all.
+
+    True for a missing or disabled device endpoint (404, 405, 501, 503)
+    and for a client that may not use the grant (``unauthorized_client``,
+    ``unsupported_grant_type``).  False for everything that can go wrong
+    during a device login itself: a denied or expired request, a timeout.
+    """
+    return (
+        error.status_code in _NO_DEVICE_STATUSES
+        or error.error in _NO_DEVICE_ERRORS
+    )
+
+
+class LoginFlow(BaseFlow):
+    """Interactive login: the device flow, or the code flow where it is not.
+
+    The flow behind :func:`~py_oidc_auth_client.authenticate`.  A cached
+    token from either grant is used, or refreshed, first.  Otherwise the
+    device flow runs, which works on headless machines too; when the
+    server does not offer it (see :func:`device_flow_unavailable`), the
+    code flow runs instead.
+
+    New tokens are stored under the identity of the flow that minted
+    them.  :attr:`identity` is the device flow's.
+
+    Parameters
+    ----------
+    host : str
+        Base URL of the server.
+    config : Config or None
+        Full configuration object.  Overrides *host* and the routes.
+    store : TokenStore or None
+        Custom token store.  Shared default when ``None``.
+    timeout : int or None
+        HTTP and polling timeout in seconds.
+    **kwargs
+        Routes, ``redirect_ports``, ``scopes`` and ``identity``, as for
+        the other flows.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from py_oidc_auth_client.flows import LoginFlow
+
+        token = await LoginFlow("https://myapp.example.com").authenticate()
+    """
+
+    grant: ClassVar[Grant] = Grant.DEVICE_CODE
+
+    def _inner(self, cls: Any) -> Any:
+        """Create a device or code flow with this flow's settings."""
+        kwargs: Dict[str, Any] = {"identity": self._identity}
+        if not self._explicit_identity:
+            kwargs = {"scopes": self._identity.scopes}
+        return cls(
+            config=self.provider.config,
+            store=self.store,
+            timeout=self.provider.timeout,
+            **kwargs,
+        )
+
+    async def authenticate(self, *, force: bool = False) -> Token:
+        """Return a valid token: cached, refreshed, or from a new login.
+
+        Parameters
+        ----------
+        force : bool
+            Log in again even if a valid token is cached.
+
+        Returns
+        -------
+        Token
+            The token.
+
+        Raises
+        ------
+        AuthError
+            If the login fails.
+        """
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
+        device: DeviceFlow = self._inner(DeviceFlow)
+        try:
+            return await device._run_device_flow()
+        except AuthError as error:
+            if not device_flow_unavailable(error):
+                raise
+            logger.info("No device flow on this server (%s), using the code flow", error)
+        code: CodeFlow = self._inner(CodeFlow)
+        return await code._run_code_flow()
+
+
+# -----------------------------------------------------------------------
+# ClientCredentialsFlow
+# -----------------------------------------------------------------------
+
+
+class ClientCredentialsFlow(BaseFlow):
+    """OAuth 2.0 Client Credentials Grant: a token for the client itself.
+
+    For service accounts and jobs that act as themselves rather than for
+    a user.  Needs an OpenID Connect provider (``Config.backend="oidc"``)
+    and a confidential client, with a secret or a key (see
+    :class:`~backends.OIDCBackend`).  The token is cached and fetched
+    again once it expires; there is usually no refresh token.
+
+    Parameters
+    ----------
+    host : str
+        Issuer URL; better pass a full *config*.
+    config : Config or None
+        Provider and client, e.g. from :meth:`Config.from_discovery`.
+    store : TokenStore or None
+        Custom token store.  Shared default when ``None``.
+    timeout : int or None
+        HTTP timeout in seconds.
+    **kwargs
+        ``scopes`` or ``identity``, as for the other flows.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from py_oidc_auth_client import Config
+        from py_oidc_auth_client.flows import ClientCredentialsFlow
+
+        config = Config.from_discovery(
+            "https://kc.example.org/realms/freva",
+            client_id="ingest-job",
+            client_secret=os.environ["OIDC_CLIENT_SECRET"],
+        )
+        token = await ClientCredentialsFlow(config=config).authenticate()
+    """
+
+    grant: ClassVar[Grant] = Grant.CLIENT_CREDENTIALS
+
+    def _resolve_identity(
+        self,
+        host: str,
+        scopes: Optional[Union[str, Iterable[str]]],
+        identity: Optional[AuthIdentity],
+    ) -> AuthIdentity:
+        """Accept only client credentials identities."""
+        if identity is not None and identity.grant is not Grant.CLIENT_CREDENTIALS:
+            raise ValueError(
+                "A ClientCredentialsFlow needs a client_credentials identity."
+            )
+        if identity is not None:
+            if scopes is not None:
+                raise TypeError("Pass either scopes or identity, not both.")
+            if identity.host != self._host_key:
+                raise ValueError(
+                    f"The identity is for {identity.host}, not for {self._host_key}."
+                )
+            return identity
+        return self._base_identity(self.grant, scopes)
+
+    def _cached_entry(self) -> Optional[StoreEntry]:
+        """Only this client's own entry counts."""
+        return self.store.get_entry(self._identity)
+
+    async def authenticate(self, *, force: bool = False) -> Token:
+        """Return a valid client token, from the cache or the provider.
+
+        Parameters
+        ----------
+        force : bool
+            Fetch a new token even if a valid one is cached.
+
+        Returns
+        -------
+        Token
+            The client's token.
+
+        Raises
+        ------
+        AuthError
+            If the backend or provider refuses the grant.
+        """
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
+        raw = await self.provider.client_credentials(scope=self._scope_param)
+        return self._build_token(raw)
+
+
+# -----------------------------------------------------------------------
+# ExchangeFlow
+# -----------------------------------------------------------------------
+
+#: What an exchange can take its subject token from.
+Subject = Union[BaseFlow, AuthIdentity, str]
+
+
+def _subject_id(token: str) -> str:
+    """Stable identifier of an external subject token.
+
+    Built from the ``iss``, ``sub`` and ``azp`` claims of a JWT, which
+    stay the same when the token is renewed.  An opaque token can only
+    be identified by its hash.
+    """
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (IndexError, ValueError, binascii.Error):
+        claims = None
+    if isinstance(claims, dict) and claims.get("sub"):
+        stable = {k: claims.get(k) for k in ("iss", "sub", "azp")}
+        material = json.dumps(stable, sort_keys=True)
+    else:
+        material = token
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+class ExchangeFlow(BaseFlow):
+    """OAuth 2.0 Token Exchange (RFC 8693).
+
+    Exchanges a subject token for a new token, for example one with
+    another audience or fewer scopes, or one from this server for a
+    token of a peer server (federation).  The subject token comes from:
+
+    * another flow (``DeviceFlow``, ``CodeFlow`` or ``ExchangeFlow``),
+      which is asked for a valid token first and so refreshes or logs
+      in as needed;
+    * an :class:`~identity.AuthIdentity` whose token is in the store;
+    * a token string obtained elsewhere.
+
+    Without a *subject*, the subject is a :class:`LoginFlow` login on
+    *host*.
+
+    Exchanged tokens usually come without a refresh token.  The result
+    is cached under an identity derived from the subject's, linked to
+    the subject's store entry, and is exchanged again from a fresh
+    subject token once it expires.
+
+    Parameters
+    ----------
+    host : str
+        Base URL of the server that performs the exchange.  May differ
+        from the subject's server.
+    config : Config or None
+        Full configuration object.  Overrides *host* and the routes.
+    subject : BaseFlow or AuthIdentity or str or None
+        Where the subject token comes from, see above.
+    audience : str or None
+        Service the new token is for (``audience``).
+    scopes : str or iterable of str or None
+        Scopes wanted for the new token.
+    resource : str or None
+        URI of the service the new token is for (``resource``).
+    requested_token_type : str or None
+        RFC 8693 type of the token wanted, as a URN or a short name
+        (``access``, ``refresh``, ``id``, ``jwt``).  ``None`` leaves it to
+        the server.
+    subject_token_type : str
+        RFC 8693 type of the subject token, an access token by default.
+        Short names work here too.
+    store : TokenStore or None
+        Custom token store.  Shared default when ``None``.  Also used
+        for the subject's token.
+    timeout : int or None
+        HTTP timeout in seconds.
+
+    Raises
+    ------
+    TypeError
+        If both *scopes* and *identity* are given.
+    ValueError
+        If an explicit *identity* belongs to another host or grant.
+
+    Examples
+    --------
+    Exchange the login on a server for a token for another service:
+
+    .. code-block:: python
+
+        from py_oidc_auth_client.flows import DeviceFlow, ExchangeFlow
+
+        login = DeviceFlow("https://myapp.example.com")
+        flow = ExchangeFlow(
+            "https://myapp.example.com", subject=login, audience="s3-gateway"
+        )
+        token = await flow.authenticate()
+
+    Use the token of one server at a trusting peer server:
+
+    .. code-block:: python
+
+        login = DeviceFlow("https://freva.dkrz.de")
+        peer = ExchangeFlow("https://freva.example.org", subject=login)
+        token = await peer.authenticate()
+    """
+
+    grant: ClassVar[Grant] = Grant.TOKEN_EXCHANGE
+
+    def __init__(
+        self,
+        host: str = "",
+        config: Optional[Config] = None,
+        *,
+        subject: Optional[Subject] = None,
+        audience: Optional[str] = None,
+        scopes: Optional[Union[str, Iterable[str]]] = None,
+        resource: Optional[str] = None,
+        requested_token_type: Optional[str] = None,
+        subject_token_type: str = TOKEN_TYPE_ACCESS,
+        store: Optional[TokenStore] = None,
+        timeout: Optional[int] = 30,
+        **kwargs: Any,
+    ) -> None:
+        self._subject_spec = subject
+        self.audience = audience
+        self.resource = resource
+        self.requested_token_type = token_type_urn(requested_token_type)
+        self.subject_token_type = token_type_urn(subject_token_type) or (
+            TOKEN_TYPE_ACCESS
+        )
+        super().__init__(
+            host, config, store=store, timeout=timeout, scopes=scopes, **kwargs
+        )
+
+    # -- Identity -------------------------------------------------------
+
+    def _resolve_identity(
+        self,
+        host: str,
+        scopes: Optional[Union[str, Iterable[str]]],
+        identity: Optional[AuthIdentity],
+    ) -> AuthIdentity:
+        """Derive the exchanged token's identity from the subject's."""
+        subject = self._subject_spec
+        if subject is None:
+            subject = LoginFlow(
+                config=self.provider.config,
+                store=self.store,
+                timeout=self.provider.timeout,
+            )
+        self.subject: Subject = subject
+        base: AuthIdentity
+        subject_id: Optional[str] = None
+        if isinstance(subject, BaseFlow):
+            base = subject.identity
+        elif isinstance(subject, AuthIdentity):
+            base = subject
+        else:
+            base = self._base_identity(None)
+            subject_id = _subject_id(subject)
+        #: Store entry the subject token came from, linked as parent.
+        self._parent: Optional[AuthIdentity] = None
+        if not isinstance(subject, str):
+            self._parent = base
+        if identity is not None:
+            if scopes is not None:
+                raise TypeError("Pass either scopes or identity, not both.")
+            if identity.host != self._host_key:
+                raise ValueError(
+                    f"The identity is for {identity.host}, not for {self._host_key}."
+                )
+            if identity.grant is not Grant.TOKEN_EXCHANGE:
+                raise ValueError("An ExchangeFlow needs a token_exchange identity.")
+            return identity
+        child = base.for_exchange(
+            audience=self.audience,
+            scopes=normalise_scopes(scopes),
+            requested_token_type=self.requested_token_type,
+            subject=subject_id,
+            host=host,
+            resource=self.resource,
+        )
+        # The exchanged token belongs to the provider and client that
+        # minted it, which may differ from the subject's.
+        own = self._base_identity(None)
+        return replace(
+            child,
+            host=own.host,
+            backend=own.backend,
+            client_id=own.client_id,
+            client_auth=own.client_auth,
+        )
+
+    # -- Token cache ----------------------------------------------------
+
+    def _cached_entry(self) -> Optional[StoreEntry]:
+        """Only the entry of this exchange counts."""
+        return self.store.get_entry(self._identity)
+
+    def _save_token(
+        self, token: Token, identity: Optional[AuthIdentity] = None
+    ) -> Token:
+        """Store the token, linked to the subject's entry."""
+        self.store.put(identity or self._identity, token, parent=self._parent)
+        return token
+
+    # -- Exchange -------------------------------------------------------
+
+    async def authenticate(self, *, force: bool = False) -> Token:
+        """Return the exchanged token, exchanging a new one when needed.
+
+        A cached token is returned while it is valid.  Otherwise a
+        valid subject token is obtained (which may refresh it, or log
+        in for a flow subject) and exchanged.
+
+        Parameters
+        ----------
+        force : bool
+            Exchange again even if a valid token is cached.  The subject
+            token is still taken from the cache when possible.
+
+        Returns
+        -------
+        Token
+            The exchanged token.
+
+        Raises
+        ------
+        AuthError
+            If no subject token can be obtained, or the server refuses
+            the exchange.
+        """
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
+        subject_token = await self._subject_token()
+        raw = await self.provider.exchange_token(
+            subject_token=subject_token,
+            subject_token_type=self.subject_token_type,
+            requested_token_type=self.requested_token_type,
+            audience=self.audience,
+            scope=self._scope_param,
+            resource=self.resource,
+        )
+        return self._build_token(raw)
+
+    async def _subject_token(self) -> str:
+        """Get a valid subject token from wherever the subject is."""
+        subject = self.subject
+        if isinstance(subject, str):
+            return subject
+        if isinstance(subject, BaseFlow):
+            token = await subject.authenticate()
+            # Link to the entry that actually holds the token, which may
+            # be a sibling grant's entry rather than subject.identity.
+            entry = subject._cached_entry()
+            if entry and entry.token.get("access_token") == token.get("access_token"):
+                self._parent = entry.identity
+            return token["access_token"]
+        cached: Optional[Token] = None
+        if subject.grant is None or subject.grant in INTERACTIVE_GRANTS:
+            same_host = subject.host == self._host_key
+            helper = DeviceFlow(
+                subject.host,
+                config=self.provider.config if same_host else None,
+                store=self.store,
+                timeout=self.provider.timeout,
+                identity=subject,
+            )
+            cached = await helper._from_cache()
+        else:
+            entry = self.store.get_entry(subject)
+            if entry and is_token_valid(entry.token, "access_token"):
+                cached = entry.token
+        if cached is None:
+            raise AuthError(
+                f"No usable token cached for {subject.label}; "
+                "authenticate first.",
+                status_code=401,
+            )
+        return cached["access_token"]

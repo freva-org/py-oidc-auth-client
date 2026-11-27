@@ -217,6 +217,73 @@ Quick start
         $ python -m py_oidc_auth_client --list
         $ python -m py_oidc_auth_client --remove https://auth.example.org
 
+Command line
+------------
+
+``python -m py_oidc_auth_client HOST`` (or ``oidc-auth HOST``) gets a token for a
+server and prints it, as JSON with ``--json``.  ``--flow`` picks how:
+
+``auto`` (default)
+    A token exchange when an exchange option is given; otherwise a login with the
+    device flow, or with the code flow where the server has no device flow.
+``device``, ``code``
+    That login flow, and nothing else.
+``exchange``
+    Exchange a token (RFC 8693).  The subject is your login on ``HOST`` unless
+    ``--subject-host`` names another server or ``--subject-token`` passes a token
+    (``-`` reads it from stdin).
+
+.. code-block:: console
+
+    $ oidc-auth https://auth.example.org                         # log in
+    $ oidc-auth https://auth.example.org --flow code              # with the browser
+    $ oidc-auth https://auth.example.org --audience s3-gateway --scope read --json
+    $ oidc-auth https://peer.example.org --subject-host https://auth.example.org
+    $ echo "$TOKEN" | oidc-auth https://auth.example.org --subject-token - \
+        --requested-token-type jwt
+
+Exchanged tokens are cached like logins; ``--force`` exchanges again.
+
+Plain OpenID Connect providers
+------------------------------
+
+To log in at Keycloak (or any OpenID Connect provider) directly, without a
+py-oidc-auth server, give the discovery URL or the issuer and a client id.  The
+endpoints come from the discovery document:
+
+.. code-block:: python
+
+    from py_oidc_auth_client import Config, authenticate, exchange
+
+    config = Config.from_discovery(
+        "https://kc.example.org/realms/freva", client_id="freva-cli"
+    )
+    token = authenticate(config=config)
+    other = exchange(config=config, audience="other-app")
+
+.. code-block:: console
+
+    $ oidc-auth --discovery-url https://kc.example.org/realms/freva --client-id freva-cli
+    $ OIDC_CLIENT_SECRET=... oidc-auth --discovery-url https://kc.example.org/realms/freva \
+        --client-id ingest-job --flow client-credentials
+
+The client is public by default (PKCE only).  A confidential client gives its secret
+(``client_secret``, or ``--client-secret-file`` / ``$OIDC_CLIENT_SECRET`` on the command
+line) or a private key (``server_key``, ``--server-key``) for ``private_key_jwt``, which
+needs ``pip install py-oidc-auth-client[keys]``.
+
+On the Keycloak side the client needs:
+
+* *OAuth 2.0 Device Authorization Grant* enabled, for the device flow;
+* ``http://localhost:*`` (or ``http://127.0.0.1:*``) among its valid redirect URIs, for
+  the code flow, which listens on the ``redirect_ports``;
+* *Client authentication* on, and *Service accounts roles* for the client credentials
+  grant; *Standard token exchange* for token exchange (Keycloak 26.2+), where the
+  client must also be in the subject token's audience;
+* for ``private_key_jwt``, *Client Authenticator* set to *Signed JWT* with the public
+  key or a JWKS URL.  Pass ``key_id`` (``--key-id``) if Keycloak matches keys by
+  ``kid``.
+
 Guides and reference
 --------------------
 

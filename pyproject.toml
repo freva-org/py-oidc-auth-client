@@ -48,9 +48,11 @@ dev = ["rust-just",
        "validate-pyproject[all]",
        "flit",
        "twine",
-       "py-oidc-auth-client[tests,lint,docs]",
+       "py-oidc-auth-client[tests,lint,docs,keys]",
        ]
 cli = ["rich-argparse"]
+# private_key_jwt client authentication for plain OpenID Connect providers
+keys = ["PyJWT[crypto]"]
 tests = ["pytest",
          "pytest-env",
          "mock",

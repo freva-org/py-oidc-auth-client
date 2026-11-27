@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 from typing import (
+    Any,
+    Dict,
     Iterator,
     List,
     Literal,
@@ -29,6 +31,7 @@ import rich.spinner
 from rich.live import Live
 
 from .schema import Token
+from .types import AuthBackend
 
 TOKEN_EXPIRY_BUFFER = 60  # seconds
 TOKEN_ENV_VAR = "OIDC_TOKEN_FILE"
@@ -68,9 +71,10 @@ class Config:
         Base URL of the application server
         (e.g. ``"https://myapp.example.com"``).
     backend: str, py-oidc-auth, oidc
-        The IDP backend that is used. py-oidc-auth assumes a endpoints
-        py-oidc-auth of a oidc-auth server while oidc gets its Configuration
-        from a discovery document following oidc protocol.
+        The IDP backend that is used.  ``py-oidc-auth`` talks to the
+        routes of a py-oidc-auth server; ``oidc`` talks to an OpenID
+        Connect provider (Keycloak, ...) directly, with the endpoints
+        taken from its discovery document.  See :meth:`from_discovery`.
     redirect_ports : list of int, optional
         Ports to try when starting a local HTTP server for the
         authorization code callback.  The first available port is used.
@@ -86,19 +90,28 @@ class Config:
         Server side route for the token exchange endpoint.
     device_route : str
         Server side route for the device authorization endpoint.
-    discovery_route: str, default: .well-known/openid-configuration
-        Route of the disevery document, relative to the ``url`` parameter.
+    discovery_document_route: str, default: .well-known/openid-configuration
+        Route of the discovery document, relative to *host* (oidc only).
     scopes: list[str], optional
-        Scopes for OIDC connections (not for py-oidc-auth).
+        Default scopes for OIDC connections (not for py-oidc-auth).
+        ``openid`` when empty.
     client_id: str, optional
-        OIDC Client id used for oidc backens (not for py-oidc-auth).
+        OIDC Client id used for oidc backends (not for py-oidc-auth).
         Defaults to ``app_name``.
     client_secret: str, default: None
         OIDC Client secret used for oidc backends (not for py-oidc-auth)
         this is only needed for client_id/client_secret based authentication.
     server_key: Path, str: default None
-        Path to the server key file (if any) for private key / public cert
-        based authentication (only for oidc backends).
+        Path to a PEM private key for ``private_key_jwt`` client
+        authentication (RFC 7523, oidc only): the client signs a short
+        lived assertion instead of sending a secret.  Needs the ``keys``
+        extra.
+    discovery_url: str, optional
+        Full URL of the discovery document, when it is not *host* plus
+        *discovery_document_route* (oidc only).
+    key_id: str, optional
+        ``kid`` header for ``private_key_jwt`` assertions, for providers
+        that pick the verification key by it.
 
     Examples
     --------
@@ -115,17 +128,16 @@ class Config:
         )
 
         oidc_auth_cfg = Config(
-            host="https://keycloak.example.com/realm/myrealm",
+            host="https://keycloak.example.com/realms/myrealm",
             backend="oidc",
-            app_name="my-project",
+            client_id="my-project",
             client_secret="my-secret"
         )
 
-        oidc_auth_cfg_with_key = Config(
-            host="https://example.com",
-            backend="oidc",
-            discovery_route="document",
-            server_key="~/.server.key"
+        oidc_auth_cfg_with_key = Config.from_discovery(
+            "https://example.com/realms/myrealm",
+            client_id="my-service",
+            server_key="~/.server.key",
         )
 
 
@@ -145,7 +157,112 @@ class Config:
     scopes: List[str] = field(default_factory=list)
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
-    server_key: Optional[os.PathLike[str]] = None
+    server_key: Optional[Union[str, "os.PathLike[str]"]] = None
+    backend: AuthBackend = "py-oidc-auth"
+    discovery_url: Optional[str] = None
+    key_id: Optional[str] = None
+
+    @classmethod
+    def from_discovery(
+        cls,
+        url: str,
+        *,
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        server_key: Optional[Union[str, "os.PathLike[str]"]] = None,
+        key_id: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
+        redirect_ports: Optional[List[int]] = None,
+        app_name: str = DEFAULT_APP_NAME,
+    ) -> "Config":
+        """Configure a plain OpenID Connect provider from its discovery URL.
+
+        Parameters
+        ----------
+        url : str
+            The discovery document's URL
+            (``https://kc.example.org/realms/freva/.well-known/openid-configuration``)
+            or the issuer it belongs to
+            (``https://kc.example.org/realms/freva``).
+        client_id : str or None
+            Client registered at the provider.  Defaults to *app_name*.
+        client_secret : str or None
+            Secret of a confidential client.
+        server_key : path or None
+            PEM private key for ``private_key_jwt`` client authentication.
+        key_id : str or None
+            ``kid`` for ``private_key_jwt`` assertions.
+        scopes : list of str or None
+            Default scopes, ``openid`` when not given.
+        redirect_ports : list of int or None
+            Local ports for the code flow callback.
+        app_name : str
+            Application name, the default *client_id*.
+
+        Returns
+        -------
+        Config
+            A config with ``backend="oidc"`` and *host* set to the issuer.
+
+        Examples
+        --------
+        >>> cfg = Config.from_discovery("https://kc.example.org/realms/freva",
+        ...                             client_id="cli")
+        >>> cfg.host
+        'https://kc.example.org/realms/freva'
+        >>> cfg.discovery_document_url.endswith("/.well-known/openid-configuration")
+        True
+        """
+        marker = "/.well-known/"
+        if marker in url:
+            host = url.split(marker, 1)[0]
+            discovery: Optional[str] = url
+        else:
+            host = url.rstrip("/")
+            discovery = None
+        extra: Dict[str, Any] = {}
+        if redirect_ports:
+            extra["redirect_ports"] = redirect_ports
+        return cls(
+            host=host,
+            backend="oidc",
+            discovery_url=discovery,
+            client_id=client_id,
+            client_secret=client_secret,
+            server_key=server_key,
+            key_id=key_id,
+            scopes=list(scopes or []),
+            app_name=app_name,
+            **extra,
+        )
+
+    @property
+    def discovery_document_url(self) -> str:
+        """Where the discovery document is (oidc backends)."""
+        return self.discovery_url or build_url(
+            self.host, self.discovery_document_route
+        )
+
+    @property
+    def effective_client_id(self) -> str:
+        """The client id, *app_name* when none is set."""
+        return self.client_id or self.app_name
+
+    @property
+    def client_auth(self) -> Optional[str]:
+        """How the client authenticates (oidc backends).
+
+        ``private_key_jwt`` with a *server_key*, ``client_secret`` with a
+        *client_secret*, ``None`` for a public client.  The method, never
+        the credential, takes part in the cache key.
+        """
+        if self.backend != "oidc":
+            return None
+        if self.server_key:
+            return "private_key_jwt"
+        if self.client_secret:
+            return "client_secret"
+        return None
 
 
 def build_url(base: str, *parts: str) -> str:

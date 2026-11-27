@@ -378,8 +378,12 @@ class TokenStore:
         elif self._is_digest(target):
             digests = [target]
         else:
-            host = normalise_host(target)
-            digests = [e.digest for e in self.entries() if e.identity.host == host]
+            digests = [
+                e.digest
+                for e in self.entries()
+                if e.identity.host
+                == normalise_host(target, keep_path=e.identity.backend == "oidc")
+            ]
         removed = 0
         for digest in digests:
             removed += self._remove_cascade(digest)

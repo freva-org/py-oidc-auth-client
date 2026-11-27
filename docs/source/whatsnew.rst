@@ -3,6 +3,42 @@ What's new
 
 This document highlights major changes and additions across releases.
 
+Unreleased
+----------
+* The command line picks the flow with ``--flow auto|device|code|exchange``.
+  ``auto``, the default, exchanges a token when an exchange option is given
+  and otherwise logs in with the device flow, or with the code flow where
+  the server has no device flow.
+* Token exchange from the command line: ``--audience``, ``--resource``,
+  ``--requested-token-type``, and ``--subject-host`` (your login on another
+  server) or ``--subject-token`` (a token, ``-`` for stdin) as the subject.
+* :class:`~py_oidc_auth_client.flows.LoginFlow` is the device-then-code
+  login behind ``authenticate()``, and the default subject of
+  ``exchange()``, which used to try the device flow only.  It falls back to
+  the code flow on a missing device endpoint (404, 405, 501, 503) or an
+  ``unauthorized_client`` / ``unsupported_grant_type`` reply; before, only a
+  503 did.
+* Token types can be given by short name: ``access``, ``refresh``, ``id``,
+  ``jwt`` (``TOKEN_TYPES``).
+* Plain OpenID Connect providers such as Keycloak, without a py-oidc-auth
+  server in between: ``Config.from_discovery(url, client_id=...)`` takes the
+  discovery URL or the issuer, and ``authenticate``, ``exchange`` and every
+  flow accept it as ``config=``.  The new ``OIDCBackend`` does the device
+  flow, the code flow (PKCE and ``state``), refresh, token exchange and the
+  client credentials grant, as a public client or with a client secret
+  (``client_secret_basic``, else ``client_secret_post``) or a key
+  (``private_key_jwt``, ``keys`` extra).  ``Config.backend`` is now a real
+  field.
+* :class:`~py_oidc_auth_client.flows.ClientCredentialsFlow` gets tokens for
+  the client itself, e.g. a service account.
+* Command line: ``--discovery-url``, ``--client-id``, ``--server-key``,
+  ``--key-id`` and ``--flow client-credentials``.  The client secret comes
+  from ``--client-secret-file`` or ``$OIDC_CLIENT_SECRET``.
+* Cache keys of OpenID Connect logins keep the issuer's path, so realms on
+  one Keycloak stay apart; py-oidc-auth keys are unchanged.
+* Connection failures raise ``AuthError`` (status 502) instead of a raw
+  ``httpx`` error.
+
 v2611.0.0
 ----------
 * Tokens without a refresh token, such as exchanged tokens, are no longer
@@ -34,6 +70,14 @@ v2611.0.0
   store by identity, so they no longer trigger the deprecation warning for
   host keyed store access.  A device flow login is reused by a later code
   flow and the other way round.
+* Token exchange (RFC 8693): ``exchange()``, ``exchange_async()`` and
+  ``ExchangeFlow``.  The subject token comes from another flow, a cached
+  identity or a token string; the exchanging server can be another one
+  than the subject's, for broker federation.  Exchanged tokens are cached
+  with a link to the subject's entry and exchanged again once they
+  expire.  Tokens carry ``issued_token_type``, and the ``TOKEN_TYPE_*``
+  constants name the RFC 8693 token types.
+* ``AuthIdentity.for_exchange`` takes ``host`` and ``resource``.
 * Device logins send the requested ``scope`` too.  Servers that ignore it
   grant their default scopes; a warning is logged when requested scopes
   are missing from the granted ones.

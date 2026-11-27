@@ -22,6 +22,9 @@ While **py-oidc-auth** helps you add OpenID Connect login, token, and device end
 * `TokenStore` as a first-class, host-aware token persistence layer
 * Device flow for headless sessions
 * Authorization code flow for interactive logins
+* Token exchange (RFC 8693) with `exchange()`, also across trusting servers
+* Plain OpenID Connect providers (Keycloak, ...) from their discovery URL,
+  including the client credentials grant and `private_key_jwt`
 * Token caching and refresh token support
 * Fully typed public API
 
@@ -169,15 +172,59 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+### Token exchange
+
+`exchange()` turns a token into another one: for another audience, with fewer
+scopes, or for a peer server that trusts this one. The exchanged token is cached
+and exchanged again from a fresh subject token when it expires.
+
+```python
+from py_oidc_auth_client import DeviceFlow, exchange
+
+# Your login on the server, exchanged for a token for another service
+token = exchange("https://auth.example.org", audience="s3-gateway")
+
+# A login on one server, used at a peer server
+login = DeviceFlow("https://auth.example.org")
+peer_token = exchange("https://peer.example.org", subject=login)
+```
+
+The same from the command line, where `--flow auto|device|code|exchange` picks the
+flow and any exchange option selects the exchange:
+
+```console
+oidc-auth https://auth.example.org --audience s3-gateway --json
+oidc-auth https://peer.example.org --subject-host https://auth.example.org
+```
+
+### Plain OpenID Connect providers
+
+Without a py-oidc-auth server, log in at the provider directly. The endpoints come
+from its discovery document:
+
+```python
+from py_oidc_auth_client import Config, authenticate
+
+config = Config.from_discovery("https://kc.example.org/realms/freva", client_id="freva-cli")
+token = authenticate(config=config)
+```
+
+```console
+oidc-auth --discovery-url https://kc.example.org/realms/freva --client-id freva-cli
+```
+
 ## Stable public API
 
 The main public building blocks are:
 
 * `authenticate`
 * `authenticate_async`
+* `exchange`
+* `exchange_async`
 * `TokenStore`
 * `CodeFlow`
 * `DeviceFlow`
+* `ExchangeFlow`
 * `Config`
 * `Token`
 * `AuthError`

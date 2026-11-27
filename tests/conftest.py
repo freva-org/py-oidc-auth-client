@@ -34,6 +34,8 @@ from py_oidc_auth_client.identity import AuthIdentity, Grant
 from py_oidc_auth_client.schema import Token
 from py_oidc_auth_client.token_store import TokenStore
 
+from . import fake_idp
+
 # ---------------------------------------------------------------------------
 # Token factories
 # ---------------------------------------------------------------------------
@@ -203,6 +205,8 @@ def create_test_app() -> FastAPI:
         app.state.legacy_pkce: bool = False
         app.state.fail_device_start: bool = False
         app.state.pending_polls: int = 1
+        # Forms of all token exchange requests, for assertions
+        app.state.exchanges: List[Dict[str, Any]] = []
         yield
 
     app = FastAPI(lifespan=_init_state)
@@ -281,6 +285,49 @@ def create_test_app() -> FastAPI:
             app.state.valid_refresh_tokens.add(resp["refresh_token"])
             return JSONResponse(resp)
 
+        if grant_type == "urn:ietf:params:oauth:grant-type:token-exchange":
+            app.state.exchanges.append(dict(form))
+            try:
+                claims = jwt.decode(
+                    form.get("subject_token", ""),
+                    JWT_SECRET,
+                    algorithms=["HS256"],
+                    options={"verify_aud": False},
+                )
+            except jwt.PyJWTError:
+                return JSONResponse(
+                    {"error": "invalid_grant", "error_description": "bad subject"},
+                    status_code=400,
+                )
+            audience = form.get("audience")
+            if audience == "forbidden":
+                return JSONResponse(
+                    {"error": "invalid_target", "error_description": "no way"},
+                    status_code=400,
+                )
+            now = int(time.time())
+            expires = min(int(claims["exp"]), now + 300)
+            access_token = jwt.encode(
+                {
+                    "sub": claims["sub"],
+                    "aud": audience or "exchanged",
+                    "iat": now,
+                    "exp": expires,
+                    "n": len(app.state.exchanges),
+                },
+                JWT_SECRET,
+            )
+            return JSONResponse(
+                {
+                    "access_token": access_token,
+                    "token_type": "Bearer",
+                    "expires_in": expires - now,
+                    "scope": form.get("scope") or "openid",
+                    "issued_token_type": form.get("requested_token_type")
+                    or "urn:ietf:params:oauth:token-type:access_token",
+                }
+            )
+
         if grant_type == "authorization_code" and code:
             if code not in app.state.valid_auth_codes:
                 return JSONResponse(
@@ -347,6 +394,8 @@ def create_test_app() -> FastAPI:
         body = await request.json()
         if "fail_device_start" in body:
             app.state.fail_device_start = body["fail_device_start"]
+        if body.get("reset_exchanges"):
+            app.state.exchanges.clear()
         if "legacy_pkce" in body:
             app.state.legacy_pkce = body["legacy_pkce"]
         if "pending_polls" in body:
@@ -356,6 +405,14 @@ def create_test_app() -> FastAPI:
         if "add_auth_code" in body:
             app.state.valid_auth_codes.add(body["add_auth_code"])
         return JSONResponse({"ok": True})
+
+    @app.get("/_test/exchanges")
+    async def exchanges() -> JSONResponse:
+        return JSONResponse(app.state.exchanges)
+
+    # A plain OpenID Connect provider next to the py-oidc-auth routes
+    fake_idp.IDP.secret = JWT_SECRET
+    app.include_router(fake_idp.build_router(), prefix=fake_idp.PREFIX)
 
     return app
 
@@ -432,3 +489,32 @@ def legacy_pkce_server(test_server: str, configure_server):
     configure_server(legacy_pkce=True)
     yield test_server
     configure_server(legacy_pkce=False)
+
+
+@pytest.fixture()
+def exchanges(test_server: str, configure_server):
+    """Return a callable listing the exchange requests the server saw."""
+    import requests as req
+
+    configure_server(reset_exchanges=True)
+
+    def _exchanges() -> List[Dict[str, Any]]:
+        resp = req.get(f"{test_server}/_test/exchanges")
+        resp.raise_for_status()
+        return resp.json()
+
+    return _exchanges
+
+
+@pytest.fixture()
+def idp(test_server: str):
+    """The fake OpenID Connect provider: its state, reset for each test."""
+    fake_idp.IDP.reset()
+    yield fake_idp.IDP
+    fake_idp.IDP.reset()
+
+
+@pytest.fixture()
+def issuer(test_server: str, idp) -> str:
+    """Issuer URL of the fake OpenID Connect provider."""
+    return f"{test_server}{fake_idp.PREFIX}"

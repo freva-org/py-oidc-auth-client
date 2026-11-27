@@ -90,7 +90,7 @@ class TestAuthenticateFallback:
         async def device_auth_fails(**kwargs):
             raise AuthError("timeout", status_code=408)
 
-        with patch.object(DeviceFlow, "authenticate", side_effect=device_auth_fails):
+        with patch.object(DeviceFlow, "_run_device_flow", side_effect=device_auth_fails):
             with pytest.raises(AuthError, match="timeout"):
                 await authenticate_async("https://a.example.com", store=tmp_store)
 

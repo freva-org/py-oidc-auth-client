@@ -1,10 +1,41 @@
 """Type annotations."""
 
-from typing import Dict, List, Literal, Union
+from typing import Dict, List, Literal, Optional, Union
 
 from typing_extensions import NotRequired, TypedDict
 
 AuthBackend = Literal["py-oidc-auth", "oidc"]
+
+#: RFC 8693 token type identifiers.
+TOKEN_TYPE_ACCESS = "urn:ietf:params:oauth:token-type:access_token"
+TOKEN_TYPE_REFRESH = "urn:ietf:params:oauth:token-type:refresh_token"
+TOKEN_TYPE_ID = "urn:ietf:params:oauth:token-type:id_token"
+TOKEN_TYPE_JWT = "urn:ietf:params:oauth:token-type:jwt"
+
+#: Short names for the RFC 8693 token types.
+TOKEN_TYPES = {
+    "access": TOKEN_TYPE_ACCESS,
+    "refresh": TOKEN_TYPE_REFRESH,
+    "id": TOKEN_TYPE_ID,
+    "jwt": TOKEN_TYPE_JWT,
+}
+
+
+def token_type_urn(value: Optional[str]) -> Optional[str]:
+    """Turn a token type short name into its RFC 8693 URN.
+
+    URNs and ``None`` pass through unchanged.
+
+    >>> token_type_urn("access")
+    'urn:ietf:params:oauth:token-type:access_token'
+    >>> token_type_urn("urn:ietf:params:oauth:token-type:jwt")
+    'urn:ietf:params:oauth:token-type:jwt'
+    >>> token_type_urn(None) is None
+    True
+    """
+    if value is None:
+        return None
+    return TOKEN_TYPES.get(value.lower(), value)
 
 
 class DeviceAuthorizationResponse(TypedDict):
@@ -27,6 +58,7 @@ class TokenResponse(TypedDict):
     refresh_token: NotRequired[str]
     refresh_expires_in: NotRequired[int]
     scope: NotRequired[str]
+    issued_token_type: NotRequired[str]
 
     # Supported compatibility fields
     expires: NotRequired[int]

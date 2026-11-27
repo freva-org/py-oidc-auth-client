@@ -7,6 +7,17 @@ Usage::
     python -m py_oidc_auth_client https://myapp.example.com --timeout 120
     python -m py_oidc_auth_client https://myapp.example.com --scope openid email
     python -m py_oidc_auth_client https://myapp.example.com --force
+    python -m py_oidc_auth_client https://myapp.example.com --flow code
+    python -m py_oidc_auth_client https://myapp.example.com --audience other-app
+    python -m py_oidc_auth_client https://peer.example.org \
+        --subject-host https://myapp.example.com
+    echo "$TOKEN" | python -m py_oidc_auth_client https://myapp.example.com \
+        --flow exchange --subject-token -
+    python -m py_oidc_auth_client --discovery-url \
+        https://kc.example.org/realms/freva --client-id freva-cli
+    OIDC_CLIENT_SECRET=... python -m py_oidc_auth_client --discovery-url \
+        https://kc.example.org/realms/freva --client-id job \
+        --flow client-credentials
     python -m py_oidc_auth_client --list
     python -m py_oidc_auth_client --list --verbose
     python -m py_oidc_auth_client --clear
@@ -17,10 +28,12 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import os
 import sys
 import time
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 try:
     from rich_argparse import (
@@ -29,10 +42,39 @@ try:
 except ImportError:
     from argparse import ArgumentDefaultsHelpFormatter as ArgumentFormatter
 
-from . import TokenStore, authenticate
+from . import TokenStore, authenticate, exchange
 from .exceptions import AuthError
+from .flows import (
+    BaseFlow,
+    ClientCredentialsFlow,
+    CodeFlow,
+    DeviceFlow,
+    LoginFlow,
+)
+from .schema import Token
 from .token_store import StoreEntry
-from .utils import DEFAULT_APP_NAME
+from .types import TOKEN_TYPES
+from .utils import DEFAULT_APP_NAME, Config
+
+FLOWS = ("auto", "device", "code", "exchange", "client-credentials")
+#: Environment variable the client secret is read from.
+SECRET_ENV = "OIDC_CLIENT_SECRET"
+#: Options that only make sense for a plain OpenID Connect provider.
+OIDC_OPTIONS = (
+    "client_id",
+    "client_secret",
+    "client_secret_file",
+    "server_key",
+    "key_id",
+)
+#: Options that only make sense for a token exchange.
+EXCHANGE_OPTIONS = (
+    "audience",
+    "resource",
+    "requested_token_type",
+    "subject_host",
+    "subject_token",
+)
 
 
 def _humanise(seconds: float) -> str:
@@ -193,9 +235,21 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
     )
     # Auth options
     parser.add_argument(
+        "-f",
+        "--flow",
+        choices=FLOWS,
+        default="auto",
+        help=(
+            "How to get the token.  auto: an exchange if an exchange option "
+            "is given, otherwise a login with the device flow, or the code "
+            "flow where the server has no device flow.  client-credentials: "
+            "a token for the client itself (--discovery-url only)."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
-        help="Force a fresh login even if a cached token exists.",
+        help="Log in, or exchange, again even if a cached token exists.",
     )
     parser.add_argument(
         "-s",
@@ -216,6 +270,83 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
         "--app-name",
         default=DEFAULT_APP_NAME,
         help="Application name for the cache directory.",
+    )
+
+    # Plain OpenID Connect provider
+    oidc_group = parser.add_argument_group(
+        "plain OpenID Connect provider (Keycloak, ...)",
+        "Log in at the provider directly instead of through a py-oidc-auth "
+        "server.  The client secret is read from --client-secret-file or $"
+        + SECRET_ENV
+        + ".",
+    )
+    oidc_group.add_argument(
+        "--discovery-url",
+        metavar="URL",
+        help=(
+            "The provider's discovery document, or its issuer "
+            "(https://kc.example.org/realms/freva).  Replaces HOST."
+        ),
+    )
+    oidc_group.add_argument(
+        "--client-id",
+        help="Client registered at the provider (default: --app-name).",
+    )
+    oidc_group.add_argument(
+        "--client-secret-file",
+        metavar="PATH",
+        help="File holding the client secret of a confidential client.",
+    )
+    oidc_group.add_argument(
+        "--client-secret",
+        help=argparse.SUPPRESS,
+    )
+    oidc_group.add_argument(
+        "--server-key",
+        metavar="PATH",
+        help="PEM private key for private_key_jwt client authentication.",
+    )
+    oidc_group.add_argument(
+        "--key-id",
+        help="kid header of the private_key_jwt assertions.",
+    )
+
+    # Token exchange
+    exchange_group = parser.add_argument_group(
+        "token exchange (RFC 8693)",
+        "Any of these selects --flow exchange.  --scope sets the scopes of "
+        "the exchanged token.",
+    )
+    exchange_group.add_argument(
+        "--audience",
+        help="Service the exchanged token is for.",
+    )
+    exchange_group.add_argument(
+        "--resource",
+        help="URI of the service the exchanged token is for.",
+    )
+    exchange_group.add_argument(
+        "--requested-token-type",
+        metavar="TYPE",
+        help=(
+            "Type of the token wanted: " + ", ".join(TOKEN_TYPES) + " or a "
+            "token type URN.  Left to the server when not given."
+        ),
+    )
+    subject = exchange_group.add_mutually_exclusive_group()
+    subject.add_argument(
+        "--subject-host",
+        metavar="URL",
+        help=(
+            "Exchange your login on this server instead of the one on "
+            "HOST (logging in there first if needed), e.g. for a peer "
+            "server that trusts it."
+        ),
+    )
+    subject.add_argument(
+        "--subject-token",
+        metavar="TOKEN",
+        help="Exchange this token; - reads it from stdin.",
     )
 
     # Store management
@@ -302,24 +433,21 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
 
     # -- Authentication (host required) ---------------------------------
 
-    if not args.host:
+    config = _oidc_config(parser, args)
+    if config is None and not args.host:
         parser.error("host is required for authentication")
+    if config is not None and args.host:
+        parser.error("give either HOST or --discovery-url, not both")
+    target = args.host or (config.host if config else "")
 
+    flow = _choose_flow(parser, args)
+    if flow == "client-credentials" and config is None:
+        parser.error("--flow client-credentials needs --discovery-url")
     try:
-        token = authenticate(
-            args.host,
-            store=store,
-            app_name=args.app_name,
-            login_route=args.login_route,
-            token_route=args.token_route,
-            device_route=args.device_route,
-            redirect_ports=args.ports,
-            force=args.force,
-            timeout=args.timeout,
-            scopes=args.scopes,
-        )
+        token = _run_flow(flow, args, store, config)
     except AuthError as exc:
-        print(f"Authentication failed: {exc}", file=sys.stderr)
+        verb = "Token exchange" if flow == "exchange" else "Authentication"
+        print(f"{verb} failed: {exc}", file=sys.stderr)
         return 1
 
     if args.output_json:
@@ -327,11 +455,133 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
     else:
         access = token.get("access_token", "")
         preview = f"{access[:20]}..." if len(access) > 20 else access
-        print(f"Authenticated to {args.host}")
+        if flow == "exchange":
+            print(f"Exchanged a token at {target}")
+            print(f"  issued_token_type: {token.get('issued_token_type', '')}")
+        else:
+            print(f"Authenticated to {target}")
         print(f"  access_token: {preview}")
         print(f"  scope:        {token.get('scope', '')}")
 
     return 0
+
+
+def _choose_flow(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    """Resolve ``--flow auto`` and reject options that do not fit the flow."""
+    given = [
+        "--" + name.replace("_", "-")
+        for name in EXCHANGE_OPTIONS
+        if getattr(args, name) is not None
+    ]
+    if args.flow == "auto":
+        return "exchange" if given else "auto"
+    if given and args.flow != "exchange":
+        parser.error(f"{', '.join(given)} only work with --flow exchange")
+    return str(args.flow)
+
+
+def _client_secret(args: argparse.Namespace) -> Optional[str]:
+    """Read the client secret: file, then flag (warned about), then env."""
+    if args.client_secret_file:
+        with open(os.path.expanduser(args.client_secret_file), encoding="utf-8") as f:
+            return f.read().strip() or None
+    if args.client_secret:
+        print(
+            "Warning: --client-secret is visible to other users (ps, shell "
+            f"history); use --client-secret-file or ${SECRET_ENV}.",
+            file=sys.stderr,
+        )
+        return str(args.client_secret)
+    return os.environ.get(SECRET_ENV) or None
+
+
+def _oidc_config(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> Optional[Config]:
+    """Build the config for a plain OpenID Connect provider, if asked for."""
+    if not args.discovery_url:
+        given = [
+            "--" + name.replace("_", "-")
+            for name in OIDC_OPTIONS
+            if getattr(args, name) is not None
+        ]
+        if given:
+            parser.error(f"{', '.join(given)} only work with --discovery-url")
+        return None
+    return Config.from_discovery(
+        args.discovery_url,
+        client_id=args.client_id,
+        client_secret=_client_secret(args),
+        server_key=args.server_key,
+        key_id=args.key_id,
+        redirect_ports=args.ports,
+        app_name=args.app_name,
+    )
+
+
+def _run_flow(
+    flow: str,
+    args: argparse.Namespace,
+    store: TokenStore,
+    config: Optional[Config] = None,
+) -> Token:
+    """Get the token the chosen way."""
+    routes = {
+        "login_route": args.login_route,
+        "token_route": args.token_route,
+        "device_route": args.device_route,
+        "redirect_ports": args.ports,
+    }
+    if flow == "auto":
+        return authenticate(
+            args.host or "",
+            config=config,
+            store=store,
+            app_name=args.app_name,
+            force=args.force,
+            timeout=args.timeout,
+            scopes=args.scopes,
+            **routes,
+        )
+    if flow in ("device", "code", "client-credentials"):
+        classes = {
+            "device": DeviceFlow,
+            "code": CodeFlow,
+            "client-credentials": ClientCredentialsFlow,
+        }
+        login: BaseFlow = classes[flow](
+            args.host or "",
+            config=config,
+            store=store,
+            timeout=args.timeout,
+            scopes=args.scopes,
+            **routes,
+        )
+        return asyncio.run(login.authenticate(force=args.force))
+    subject: Optional[Union[LoginFlow, str]] = None
+    if args.subject_token is not None:
+        subject = args.subject_token
+        if subject == "-":
+            subject = sys.stdin.read().strip()
+        if not subject:
+            raise AuthError("No subject token given.", status_code=400)
+    elif args.subject_host is not None:
+        subject = LoginFlow(
+            args.subject_host, store=store, timeout=args.timeout, **routes
+        )
+    return exchange(
+        args.host or "",
+        config=config,
+        subject=subject,
+        audience=args.audience,
+        scopes=args.scopes,
+        resource=args.resource,
+        requested_token_type=args.requested_token_type,
+        token_route=args.token_route,
+        store=store,
+        force=args.force,
+        timeout=args.timeout,
+    )
 
 
 if __name__ == "__main__":
