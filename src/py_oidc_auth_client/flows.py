@@ -4,7 +4,7 @@ Authentication Flows
 
 OIDC/OAuth 2.0 client side authentication flows.
 
-The module provides five classes arranged in an inheritance hierarchy:
+The module provides six classes arranged in an inheritance hierarchy:
 
 .. code-block:: text
 
@@ -13,6 +13,7 @@ The module provides five classes arranged in an inheritance hierarchy:
       +-- DeviceFlow    (OAuth 2.0 Device Authorization Grant)
       +-- CodeFlow      (OAuth 2.0 Authorization Code Grant with PKCE)
       +-- LoginFlow     (device flow, falling back to the code flow)
+      +-- ClientCredentialsFlow  (OAuth 2.0 Client Credentials Grant)
       +-- ExchangeFlow  (OAuth 2.0 Token Exchange, RFC 8693)
 
 All flow classes share a process wide token store via :class:`BaseFlow`
@@ -48,12 +49,13 @@ import urllib.parse
 import warnings
 import webbrowser
 from asyncio import sleep as asleep
+from dataclasses import replace
 from getpass import getuser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Thread
 from typing import Any, ClassVar, Dict, Iterable, List, Optional, Union
 
-from .backends import PyOIDCAuth
+from .backends import make_backend
 from .exceptions import AuthError
 from .identity import (
     INTERACTIVE_GRANTS,
@@ -256,7 +258,7 @@ class BaseFlow:
             device_route=device_route,
             redirect_ports=redirect_ports or [53100, 53101, 53102, 53103, 53104, 53105],
         )
-        self.provider = PyOIDCAuth(config, timeout=timeout)
+        self.provider = make_backend(config, timeout=timeout)
         self.store = store or self._get_default_store()
         self._explicit_identity = identity is not None
         self._identity = self._resolve_identity(config.host, scopes, identity)
@@ -278,18 +280,12 @@ class BaseFlow:
     ) -> AuthIdentity:
         """Check a given identity, or derive the flow's own one."""
         if identity is None:
-            return AuthIdentity(
-                host=host,
-                backend="py-oidc-auth",
-                grant=self.grant,
-                scopes=normalise_scopes(scopes),
-            )
+            return self._base_identity(self.grant, scopes)
         if scopes is not None:
             raise TypeError("Pass either scopes or identity, not both.")
-        if identity.host != normalise_host(host):
+        if identity.host != self._host_key:
             raise ValueError(
-                f"The identity is for {identity.host}, not for "
-                f"{normalise_host(host)}."
+                f"The identity is for {identity.host}, not for {self._host_key}."
             )
         if identity.grant is not None and identity.grant not in INTERACTIVE_GRANTS:
             raise ValueError(
@@ -297,6 +293,29 @@ class BaseFlow:
                 f"{identity.grant.display} grant."
             )
         return identity
+
+    @property
+    def _host_key(self) -> str:
+        """The configured host as identities hold it."""
+        config = self.provider.config
+        return normalise_host(config.host, keep_path=config.backend == "oidc")
+
+    def _base_identity(
+        self,
+        grant: Optional[Grant],
+        scopes: Optional[Union[str, Iterable[str]]] = None,
+    ) -> AuthIdentity:
+        """Build an identity for this flow's provider and client."""
+        config = self.provider.config
+        oidc = config.backend == "oidc"
+        return AuthIdentity(
+            host=config.host,
+            backend=config.backend,
+            grant=grant,
+            client_id=config.effective_client_id if oidc else None,
+            scopes=normalise_scopes(scopes),
+            client_auth=config.client_auth,
+        )
 
     @property
     def identity(self) -> AuthIdentity:
@@ -323,12 +342,16 @@ class BaseFlow:
         wanted = self._identity.scopes
         for entry in self.store.find(
             host=self._identity.host,
-            backend="py-oidc-auth",
+            backend=self._identity.backend,
             grants=INTERACTIVE_GRANTS,
             scopes=wanted or None,
         ):
             ident = entry.identity
-            if ident.client_id or ident.audience or ident.exchange:
+            if ident.client_id != self._identity.client_id:
+                continue
+            if ident.client_auth != self._identity.client_auth:
+                continue
+            if ident.audience or ident.exchange:
                 continue
             if not wanted and ident.scopes and ident.grant is not None:
                 continue
@@ -1159,6 +1182,100 @@ class LoginFlow(BaseFlow):
 
 
 # -----------------------------------------------------------------------
+# ClientCredentialsFlow
+# -----------------------------------------------------------------------
+
+
+class ClientCredentialsFlow(BaseFlow):
+    """OAuth 2.0 Client Credentials Grant: a token for the client itself.
+
+    For service accounts and jobs that act as themselves rather than for
+    a user.  Needs an OpenID Connect provider (``Config.backend="oidc"``)
+    and a confidential client, with a secret or a key (see
+    :class:`~backends.OIDCBackend`).  The token is cached and fetched
+    again once it expires; there is usually no refresh token.
+
+    Parameters
+    ----------
+    host : str
+        Issuer URL; better pass a full *config*.
+    config : Config or None
+        Provider and client, e.g. from :meth:`Config.from_discovery`.
+    store : TokenStore or None
+        Custom token store.  Shared default when ``None``.
+    timeout : int or None
+        HTTP timeout in seconds.
+    **kwargs
+        ``scopes`` or ``identity``, as for the other flows.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        from py_oidc_auth_client import Config
+        from py_oidc_auth_client.flows import ClientCredentialsFlow
+
+        config = Config.from_discovery(
+            "https://kc.example.org/realms/freva",
+            client_id="ingest-job",
+            client_secret=os.environ["OIDC_CLIENT_SECRET"],
+        )
+        token = await ClientCredentialsFlow(config=config).authenticate()
+    """
+
+    grant: ClassVar[Grant] = Grant.CLIENT_CREDENTIALS
+
+    def _resolve_identity(
+        self,
+        host: str,
+        scopes: Optional[Union[str, Iterable[str]]],
+        identity: Optional[AuthIdentity],
+    ) -> AuthIdentity:
+        """Accept only client credentials identities."""
+        if identity is not None and identity.grant is not Grant.CLIENT_CREDENTIALS:
+            raise ValueError(
+                "A ClientCredentialsFlow needs a client_credentials identity."
+            )
+        if identity is not None:
+            if scopes is not None:
+                raise TypeError("Pass either scopes or identity, not both.")
+            if identity.host != self._host_key:
+                raise ValueError(
+                    f"The identity is for {identity.host}, not for {self._host_key}."
+                )
+            return identity
+        return self._base_identity(self.grant, scopes)
+
+    def _cached_entry(self) -> Optional[StoreEntry]:
+        """Only this client's own entry counts."""
+        return self.store.get_entry(self._identity)
+
+    async def authenticate(self, *, force: bool = False) -> Token:
+        """Return a valid client token, from the cache or the provider.
+
+        Parameters
+        ----------
+        force : bool
+            Fetch a new token even if a valid one is cached.
+
+        Returns
+        -------
+        Token
+            The client's token.
+
+        Raises
+        ------
+        AuthError
+            If the backend or provider refuses the grant.
+        """
+        cached = await self._from_cache(force)
+        if cached is not None:
+            return cached
+        raw = await self.provider.client_credentials(scope=self._scope_param)
+        return self._build_token(raw)
+
+
+# -----------------------------------------------------------------------
 # ExchangeFlow
 # -----------------------------------------------------------------------
 
@@ -1317,7 +1434,7 @@ class ExchangeFlow(BaseFlow):
         elif isinstance(subject, AuthIdentity):
             base = subject
         else:
-            base = AuthIdentity(host=host, backend="py-oidc-auth", grant=None)
+            base = self._base_identity(None)
             subject_id = _subject_id(subject)
         #: Store entry the subject token came from, linked as parent.
         self._parent: Optional[AuthIdentity] = None
@@ -1326,21 +1443,30 @@ class ExchangeFlow(BaseFlow):
         if identity is not None:
             if scopes is not None:
                 raise TypeError("Pass either scopes or identity, not both.")
-            if identity.host != normalise_host(host):
+            if identity.host != self._host_key:
                 raise ValueError(
-                    f"The identity is for {identity.host}, not for "
-                    f"{normalise_host(host)}."
+                    f"The identity is for {identity.host}, not for {self._host_key}."
                 )
             if identity.grant is not Grant.TOKEN_EXCHANGE:
                 raise ValueError("An ExchangeFlow needs a token_exchange identity.")
             return identity
-        return base.for_exchange(
+        child = base.for_exchange(
             audience=self.audience,
             scopes=normalise_scopes(scopes),
             requested_token_type=self.requested_token_type,
             subject=subject_id,
             host=host,
             resource=self.resource,
+        )
+        # The exchanged token belongs to the provider and client that
+        # minted it, which may differ from the subject's.
+        own = self._base_identity(None)
+        return replace(
+            child,
+            host=own.host,
+            backend=own.backend,
+            client_id=own.client_id,
+            client_auth=own.client_auth,
         )
 
     # -- Token cache ----------------------------------------------------
@@ -1411,7 +1537,7 @@ class ExchangeFlow(BaseFlow):
             return token["access_token"]
         cached: Optional[Token] = None
         if subject.grant is None or subject.grant in INTERACTIVE_GRANTS:
-            same_host = subject.host == normalise_host(self.provider.config.host)
+            same_host = subject.host == self._host_key
             helper = DeviceFlow(
                 subject.host,
                 config=self.provider.config if same_host else None,

@@ -11,15 +11,18 @@ Primary building blocks
 * :func:`py_oidc_auth_client.authenticate_async`
 * :func:`py_oidc_auth_client.exchange`
 * :func:`py_oidc_auth_client.exchange_async`
+* :class:`py_oidc_auth_client.LoginFlow`
 * :class:`py_oidc_auth_client.CodeFlow`
 * :class:`py_oidc_auth_client.DeviceFlow`
 * :class:`py_oidc_auth_client.ExchangeFlow`
+* :class:`py_oidc_auth_client.ClientCredentialsFlow`
 * :class:`py_oidc_auth_client.TokenStore`
 
 Supporting public types
 -----------------------
 
-* :class:`py_oidc_auth_client.Config`
+* :class:`py_oidc_auth_client.Config` (``Config.from_discovery`` for plain OpenID Connect
+  providers)
 * :class:`py_oidc_auth_client.Token`
 * :class:`py_oidc_auth_client.AuthError`
 * :class:`py_oidc_auth_client.AuthIdentity`

@@ -34,6 +34,8 @@ from py_oidc_auth_client.identity import AuthIdentity, Grant
 from py_oidc_auth_client.schema import Token
 from py_oidc_auth_client.token_store import TokenStore
 
+from . import fake_idp
+
 # ---------------------------------------------------------------------------
 # Token factories
 # ---------------------------------------------------------------------------
@@ -408,6 +410,10 @@ def create_test_app() -> FastAPI:
     async def exchanges() -> JSONResponse:
         return JSONResponse(app.state.exchanges)
 
+    # A plain OpenID Connect provider next to the py-oidc-auth routes
+    fake_idp.IDP.secret = JWT_SECRET
+    app.include_router(fake_idp.build_router(), prefix=fake_idp.PREFIX)
+
     return app
 
 
@@ -498,3 +504,17 @@ def exchanges(test_server: str, configure_server):
         return resp.json()
 
     return _exchanges
+
+
+@pytest.fixture()
+def idp(test_server: str):
+    """The fake OpenID Connect provider: its state, reset for each test."""
+    fake_idp.IDP.reset()
+    yield fake_idp.IDP
+    fake_idp.IDP.reset()
+
+
+@pytest.fixture()
+def issuer(test_server: str, idp) -> str:
+    """Issuer URL of the fake OpenID Connect provider."""
+    return f"{test_server}{fake_idp.PREFIX}"

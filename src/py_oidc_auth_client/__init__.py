@@ -76,6 +76,22 @@ explicit ``identity``:
 For finer control over individual flows, see :class:`~flows.DeviceFlow`
 and :class:`~flows.CodeFlow`.
 
+Plain OpenID Connect providers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Without a py-oidc-auth server in between, log in at the provider (Keycloak,
+...) directly.  :meth:`Config.from_discovery` takes the discovery URL or the
+issuer, and the endpoints come from the discovery document:
+
+.. code-block:: python
+
+    from py_oidc_auth_client import Config, authenticate
+
+    config = Config.from_discovery(
+        "https://kc.example.org/realms/freva", client_id="freva-cli"
+    )
+    token = authenticate(config=config)
+
 Token exchange
 ~~~~~~~~~~~~~~
 
@@ -122,6 +138,7 @@ from typing import Iterable, List, Optional, Union
 from .exceptions import AuthError
 from .flows import (
     BaseFlow,
+    ClientCredentialsFlow,
     CodeFlow,
     DeviceFlow,
     ExchangeFlow,
@@ -143,8 +160,15 @@ from .utils import Config
 __version__ = "2611.0.0"
 
 
+def _config(host: str, config: Optional[Config]) -> Optional[Config]:
+    """Check that a server is named one way or the other."""
+    if not host and config is None:
+        raise ValueError("Pass a host or a config.")
+    return config
+
+
 def authenticate(
-    host: str,
+    host: str = "",
     *,
     login_route: str = "/auth/v2/login",
     token_route: str = "/auth/v2/token",
@@ -156,6 +180,7 @@ def authenticate(
     timeout: Optional[int] = 30,
     scopes: Optional[Union[str, Iterable[str]]] = None,
     identity: Optional[AuthIdentity] = None,
+    config: Optional[Config] = None,
 ) -> Token:
     """Authenticate to an OIDC protected server and return a token.
 
@@ -211,6 +236,10 @@ def authenticate(
         interactive one (device code or authorization code; either
         flow may produce the token), and its scopes are requested from
         the server.  Mutually exclusive with *scopes*.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
 
     Returns
     -------
@@ -301,12 +330,13 @@ def authenticate(
             timeout=timeout,
             scopes=scopes,
             identity=identity,
+            config=config,
         )
     )
 
 
 async def authenticate_async(
-    host: str,
+    host: str = "",
     *,
     login_route: str = "/auth/v2/login",
     token_route: str = "/auth/v2/token",
@@ -318,6 +348,7 @@ async def authenticate_async(
     timeout: Optional[int] = 30,
     scopes: Optional[Union[str, Iterable[str]]] = None,
     identity: Optional[AuthIdentity] = None,
+    config: Optional[Config] = None,
 ) -> Token:
     """Async version of :func:`authenticate`.
 
@@ -351,6 +382,10 @@ async def authenticate_async(
         Scopes to request instead of the server's default ones.
     identity : AuthIdentity or None
         Exact cache key for the token.  See :func:`authenticate`.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
 
     Returns
     -------
@@ -379,6 +414,7 @@ async def authenticate_async(
     """
     flow = LoginFlow(
         host,
+        config=_config(host, config),
         redirect_ports=redirect_ports,
         login_route=login_route,
         device_route=device_route,
@@ -392,7 +428,7 @@ async def authenticate_async(
 
 
 def exchange(
-    host: str,
+    host: str = "",
     *,
     subject: Optional[Subject] = None,
     audience: Optional[str] = None,
@@ -405,6 +441,7 @@ def exchange(
     app_name: str = "py-oidc-auth",
     force: bool = False,
     timeout: Optional[int] = 30,
+    config: Optional[Config] = None,
 ) -> Token:
     """Exchange a token for another one (RFC 8693) and return it.
 
@@ -416,7 +453,8 @@ def exchange(
     Parameters
     ----------
     host : str
-        Base URL of the server that performs the exchange.
+        Base URL of the server that performs the exchange.  May be left
+        out when *config* is given.
     subject : DeviceFlow or CodeFlow or ExchangeFlow or AuthIdentity or str
         Where the subject token comes from: a flow, which is asked for
         a valid token first (and may log in); the identity of a cached
@@ -445,6 +483,10 @@ def exchange(
         Exchange again even if a valid exchanged token is cached.
     timeout : int or None
         HTTP timeout in seconds.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
 
     Returns
     -------
@@ -479,12 +521,13 @@ def exchange(
             app_name=app_name,
             force=force,
             timeout=timeout,
+            config=config,
         )
     )
 
 
 async def exchange_async(
-    host: str,
+    host: str = "",
     *,
     subject: Optional[Subject] = None,
     audience: Optional[str] = None,
@@ -497,13 +540,15 @@ async def exchange_async(
     app_name: str = "py-oidc-auth",
     force: bool = False,
     timeout: Optional[int] = 30,
+    config: Optional[Config] = None,
 ) -> Token:
     """Async version of :func:`exchange`.
 
     Parameters
     ----------
     host : str
-        Base URL of the server that performs the exchange.
+        Base URL of the server that performs the exchange.  May be left
+        out when *config* is given.
     subject : DeviceFlow or CodeFlow or ExchangeFlow or AuthIdentity or str
         Where the subject token comes from.  See :func:`exchange`.
     audience : str or None
@@ -526,6 +571,10 @@ async def exchange_async(
         Exchange again even if a valid exchanged token is cached.
     timeout : int or None
         HTTP timeout in seconds.
+    config : Config or None
+        Full configuration instead of *host* and the routes, e.g.
+        ``Config.from_discovery(url, client_id=...)`` for a plain OpenID
+        Connect provider such as Keycloak.
 
     Returns
     -------
@@ -539,6 +588,7 @@ async def exchange_async(
     """
     flow = ExchangeFlow(
         host,
+        config=_config(host, config),
         subject=subject,
         audience=audience,
         scopes=scopes,
@@ -556,6 +606,7 @@ __all__ = [
     "AuthError",
     "AuthIdentity",
     "BaseFlow",
+    "ClientCredentialsFlow",
     "CodeFlow",
     "Config",
     "DeviceCode",

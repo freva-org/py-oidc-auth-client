@@ -23,6 +23,8 @@ While **py-oidc-auth** helps you add OpenID Connect login, token, and device end
 * Device flow for headless sessions
 * Authorization code flow for interactive logins
 * Token exchange (RFC 8693) with `exchange()`, also across trusting servers
+* Plain OpenID Connect providers (Keycloak, ...) from their discovery URL,
+  including the client credentials grant and `private_key_jwt`
 * Token caching and refresh token support
 * Fully typed public API
 
@@ -193,6 +195,22 @@ flow and any exchange option selects the exchange:
 ```console
 oidc-auth https://auth.example.org --audience s3-gateway --json
 oidc-auth https://peer.example.org --subject-host https://auth.example.org
+```
+
+### Plain OpenID Connect providers
+
+Without a py-oidc-auth server, log in at the provider directly. The endpoints come
+from its discovery document:
+
+```python
+from py_oidc_auth_client import Config, authenticate
+
+config = Config.from_discovery("https://kc.example.org/realms/freva", client_id="freva-cli")
+token = authenticate(config=config)
+```
+
+```console
+oidc-auth --discovery-url https://kc.example.org/realms/freva --client-id freva-cli
 ```
 
 ## Stable public API

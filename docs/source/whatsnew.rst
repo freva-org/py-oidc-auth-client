@@ -20,6 +20,24 @@ Unreleased
   503 did.
 * Token types can be given by short name: ``access``, ``refresh``, ``id``,
   ``jwt`` (``TOKEN_TYPES``).
+* Plain OpenID Connect providers such as Keycloak, without a py-oidc-auth
+  server in between: ``Config.from_discovery(url, client_id=...)`` takes the
+  discovery URL or the issuer, and ``authenticate``, ``exchange`` and every
+  flow accept it as ``config=``.  The new ``OIDCBackend`` does the device
+  flow, the code flow (PKCE and ``state``), refresh, token exchange and the
+  client credentials grant, as a public client or with a client secret
+  (``client_secret_basic``, else ``client_secret_post``) or a key
+  (``private_key_jwt``, ``keys`` extra).  ``Config.backend`` is now a real
+  field.
+* :class:`~py_oidc_auth_client.flows.ClientCredentialsFlow` gets tokens for
+  the client itself, e.g. a service account.
+* Command line: ``--discovery-url``, ``--client-id``, ``--server-key``,
+  ``--key-id`` and ``--flow client-credentials``.  The client secret comes
+  from ``--client-secret-file`` or ``$OIDC_CLIENT_SECRET``.
+* Cache keys of OpenID Connect logins keep the issuer's path, so realms on
+  one Keycloak stay apart; py-oidc-auth keys are unchanged.
+* Connection failures raise ``AuthError`` (status 502) instead of a raw
+  ``httpx`` error.
 
 v2611.0.0
 ----------

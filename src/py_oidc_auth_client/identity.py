@@ -85,16 +85,19 @@ class Grant(str, Enum):
 INTERACTIVE_GRANTS = frozenset({Grant.AUTHORIZATION_CODE, Grant.DEVICE_CODE})
 
 
-def normalise_host(host: str) -> str:
+def normalise_host(host: str, keep_path: bool = False) -> str:
     """Normalise a host URL for use in a cache identity.
 
-    Lowercases scheme and hostname, drops default ports and any path,
-    query or fragment.
+    Lowercases scheme and hostname, drops default ports, query and
+    fragment, and the path unless *keep_path* is set.
 
     Parameters
     ----------
     host : str
         Raw host URL, e.g. ``"https://MyApp.Example.COM:443/"``.
+    keep_path : bool
+        Keep the path, without a trailing slash.  For OpenID Connect
+        issuers, where the path tells realms on one server apart.
 
     Returns
     -------
@@ -107,6 +110,8 @@ def normalise_host(host: str) -> str:
     'https://myapp.example.com'
     >>> normalise_host("http://localhost:8080")
     'http://localhost:8080'
+    >>> normalise_host("https://KC.example.org/realms/freva/", keep_path=True)
+    'https://kc.example.org/realms/freva'
     """
     parsed = urlparse(host)
     scheme = (parsed.scheme or "https").lower()
@@ -116,7 +121,8 @@ def normalise_host(host: str) -> str:
         (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
     ):
         netloc = f"{netloc}:{port}"
-    return f"{scheme}://{netloc}"
+    path = parsed.path.rstrip("/") if keep_path else ""
+    return f"{scheme}://{netloc}{path}"
 
 
 def normalise_scopes(scopes: Optional[Iterable[str]]) -> Tuple[str, ...]:
@@ -167,7 +173,9 @@ class AuthIdentity:
     ----------
     host : str
         Base URL of the provider or application server.  Normalised on
-        construction, so callers may pass a raw URL.
+        construction, so callers may pass a raw URL.  For the ``oidc``
+        backend the path is kept: it is the issuer, and on Keycloak the
+        path names the realm.
     backend : str
         Which provider backend drives the flow, ``"py-oidc-auth"`` or
         ``"oidc"``.
@@ -234,7 +242,10 @@ class AuthIdentity:
 
     def __post_init__(self) -> None:
         """Canonicalise host and scopes so equal inputs compare equal."""
-        object.__setattr__(self, "host", normalise_host(self.host))
+        # An OpenID Connect issuer's path names the realm; py-oidc-auth
+        # servers are keyed by origin, as they always were.
+        keep_path = self.backend == "oidc"
+        object.__setattr__(self, "host", normalise_host(self.host, keep_path))
         object.__setattr__(self, "scopes", normalise_scopes(self.scopes))
 
     # -- Key ------------------------------------------------------------
@@ -488,7 +499,9 @@ class AuthIdentity:
         bool
             ``True`` when every given constraint holds.
         """
-        if host is not None and self.host != normalise_host(host):
+        if host is not None and self.host != normalise_host(
+            host, keep_path=self.backend == "oidc"
+        ):
             return False
         if backend is not None and self.backend != backend:
             return False
