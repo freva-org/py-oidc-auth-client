@@ -5,6 +5,7 @@ Usage::
 
     python -m py_oidc_auth_client https://myapp.example.com
     python -m py_oidc_auth_client https://myapp.example.com --timeout 120
+    python -m py_oidc_auth_client https://myapp.example.com --scope openid email
     python -m py_oidc_auth_client https://myapp.example.com --force
     python -m py_oidc_auth_client --list
     python -m py_oidc_auth_client --list --verbose
@@ -197,6 +198,15 @@ def _build_parser(prog: str) -> argparse.ArgumentParser:
         help="Force a fresh login even if a cached token exists.",
     )
     parser.add_argument(
+        "-s",
+        "--scope",
+        dest="scopes",
+        nargs="+",
+        default=None,
+        metavar="SCOPE",
+        help="Scopes to request instead of the server's default ones.",
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=30,
@@ -306,6 +316,7 @@ def main(argv: Optional[Sequence[str]] = None, prog: str = "oidc-auth") -> int:
             redirect_ports=args.ports,
             force=args.force,
             timeout=args.timeout,
+            scopes=args.scopes,
         )
     except AuthError as exc:
         print(f"Authentication failed: {exc}", file=sys.stderr)

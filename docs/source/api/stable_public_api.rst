@@ -23,10 +23,11 @@ Supporting public types
 * :class:`py_oidc_auth_client.Grant`
 * :class:`py_oidc_auth_client.StoreEntry`
 
-``AuthIdentity``, ``Grant`` and ``StoreEntry`` are types you read rather than build.
-Flows derive their own identity from the parameters you give them, and the store hands
-identities and entries back when you inspect the cache.  You should not need to
-construct an ``AuthIdentity`` in application code.
+``Grant`` and ``StoreEntry`` are types you read rather than build, and usually so is
+``AuthIdentity``: flows derive their own identity from the parameters you give them
+(``flow.identity``), and the store hands identities and entries back when you inspect
+the cache.  Build an ``AuthIdentity`` yourself only to choose the exact store entry a
+login is saved under, with the ``identity`` argument of ``authenticate()`` and the flows.
 
 Why ``TokenStore`` is listed with the main entry points
 -------------------------------------------------------

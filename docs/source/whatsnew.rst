@@ -25,6 +25,18 @@ v2611.0.0
   verifier they put into ``state`` is used, as before.
 * The code flow sends its own ``state`` and refuses callbacks that do not
   carry it.
+* ``authenticate``, ``authenticate_async``, ``DeviceFlow`` and ``CodeFlow``
+  accept ``scopes`` to request fewer scopes than the server's default, and
+  ``identity`` to choose the token store entry a login is stored under
+  (`#35 <https://github.com/freva-org/py-oidc-auth-client/issues/35>`_).
+  The command line has a matching ``--scope`` option.
+* Flows expose their cache key as ``flow.identity`` and read and write the
+  store by identity, so they no longer trigger the deprecation warning for
+  host keyed store access.  A device flow login is reused by a later code
+  flow and the other way round.
+* Device logins send the requested ``scope`` too.  Servers that ignore it
+  grant their default scopes; a warning is logged when requested scopes
+  are missing from the granted ones.
 
 v2609.0.0
 ---------

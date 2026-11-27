@@ -291,6 +291,16 @@ class TestCLIOptionPassthrough:
         ).kwargs
         assert kwargs["redirect_ports"] == [9000, 9001]
 
+    def test_scopes_reach_authenticate(self):
+        kwargs = self.call_args(
+            ["https://a.example.com", "--scope", "openid", "email"]
+        ).kwargs
+        assert kwargs["scopes"] == ["openid", "email"]
+
+    def test_no_scopes_by_default(self):
+        kwargs = self.call_args(["https://a.example.com"]).kwargs
+        assert kwargs["scopes"] is None
+
 
 class TestCLIAuthenticate:
     """CLI authentication invocation."""

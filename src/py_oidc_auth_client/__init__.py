@@ -52,10 +52,26 @@ overwrites an existing token.
     token_a = authenticate(host="https://server-a.example.com")
     token_b = authenticate(host="https://server-b.example.com")
 
-You do not build identities yourself.  Each flow derives its own from
-the parameters you pass it, and exposes it read only as
-``flow.identity``.  Identities come back out of the store when you
-inspect the cache.
+Usually you do not build identities yourself.  Each flow derives its
+own from the parameters you pass it, and exposes it read only as
+``flow.identity``.  Pass ``scopes`` to request fewer scopes than the
+server's default; the token is cached separately from the default
+login.  To store a token under a key of your choosing, pass an
+explicit ``identity``:
+
+.. code-block:: python
+
+    from py_oidc_auth_client import AuthIdentity, Grant, authenticate
+
+    token = authenticate(host="https://myapp.example.com", scopes="openid email")
+
+    ident = AuthIdentity(
+        host="https://myapp.example.com",
+        backend="py-oidc-auth",
+        grant=Grant.DEVICE_CODE,
+        scopes=("openid", "email"),
+    )
+    token = authenticate(host="https://myapp.example.com", identity=ident)
 
 For finer control over individual flows, see :class:`~flows.DeviceFlow`
 and :class:`~flows.CodeFlow`.
@@ -67,6 +83,7 @@ CLI usage
 
     python -m py_oidc_auth_client https://myapp.example.com
     python -m py_oidc_auth_client https://myapp.example.com --timeout 120
+    python -m py_oidc_auth_client https://myapp.example.com --scope openid email
     python -m py_oidc_auth_client --list
     python -m py_oidc_auth_client --list --verbose
     python -m py_oidc_auth_client --clear
@@ -76,7 +93,7 @@ CLI usage
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
+from typing import Iterable, List, Optional, Union
 
 from .exceptions import AuthError
 from .flows import BaseFlow, CodeFlow, DeviceFlow
@@ -99,6 +116,8 @@ def authenticate(
     app_name: str = "py-oidc-auth",
     force: bool = False,
     timeout: Optional[int] = 30,
+    scopes: Optional[Union[str, Iterable[str]]] = None,
+    identity: Optional[AuthIdentity] = None,
 ) -> Token:
     """Authenticate to an OIDC protected server and return a token.
 
@@ -144,6 +163,16 @@ def authenticate(
     timeout : int or None
         Maximum seconds to wait for the user to complete the browser
         login.  ``None`` waits indefinitely.
+    scopes : str or iterable of str or None
+        Scopes to request instead of the server's default ones.  A
+        token with fewer scopes is cached separately, so it never
+        stands in for a default login.
+    identity : AuthIdentity or None
+        Store the token under exactly this identity, and only reuse a
+        token cached under it.  Its host must be *host*, its grant an
+        interactive one (device code or authorization code; either
+        flow may produce the token), and its scopes are requested from
+        the server.  Mutually exclusive with *scopes*.
 
     Returns
     -------
@@ -190,6 +219,15 @@ def authenticate(
             timeout=120,
         )
 
+    Request only some scopes:
+
+    .. code-block:: python
+
+        token = authenticate(
+            host="https://myapp.example.com",
+            scopes=["openid", "email"],
+        )
+
     Custom app name (changes cache directory):
 
     .. code-block:: python
@@ -223,6 +261,8 @@ def authenticate(
             app_name=app_name,
             force=force,
             timeout=timeout,
+            scopes=scopes,
+            identity=identity,
         )
     )
 
@@ -238,6 +278,8 @@ async def authenticate_async(
     app_name: str = "py-oidc-auth",
     force: bool = False,
     timeout: Optional[int] = 30,
+    scopes: Optional[Union[str, Iterable[str]]] = None,
+    identity: Optional[AuthIdentity] = None,
 ) -> Token:
     """Async version of :func:`authenticate`.
 
@@ -267,6 +309,10 @@ async def authenticate_async(
         Skip the cache and force a fresh login.
     timeout : int or None
         Maximum seconds to wait for user approval.
+    scopes : str or iterable of str or None
+        Scopes to request instead of the server's default ones.
+    identity : AuthIdentity or None
+        Exact cache key for the token.  See :func:`authenticate`.
 
     Returns
     -------
@@ -303,6 +349,8 @@ async def authenticate_async(
         token_route=token_route,
         store=effective_store,
         timeout=timeout,
+        scopes=scopes,
+        identity=identity,
     )
     try:
         return await device.authenticate(force=force)
@@ -317,6 +365,8 @@ async def authenticate_async(
                 token_route=token_route,
                 store=effective_store,
                 timeout=timeout,
+                scopes=scopes,
+                identity=identity,
             )
             return await code.authenticate(force=force)
         raise
